@@ -1,5 +1,20 @@
 // app.js — Donna (dual mode: Socket for dev, HTTP + /schedule for prod)
 require('dotenv').config();
+
+const { initLLM, routeWithLLM } = require('./brain');
+const AGENT_MODE = String(process.env.AGENT_MODE).toLowerCase() === 'true';
+
+// simple per-thread memory (swap for Redis/DB later)
+const threadState = new Map();
+function keyForThread(channel, thread_ts) { return `${channel}::${thread_ts || 'root'}`; }
+function loadThread(channel, thread_ts) { return threadState.get(keyForThread(channel, thread_ts)) || {}; }
+function saveThread(channel, thread_ts, data) {
+  const k = keyForThread(channel, thread_ts);
+  const curr = threadState.get(k) || {};
+  threadState.set(k, { ...curr, ...data });
+}
+
+
 const { App, ExpressReceiver } = require('@slack/bolt');
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -120,48 +135,94 @@ if (SOCKET_MODE) {
 // Usage: @Donna schedule "Title" 30
 // ─────────────────────────────────────────────────────────────────────────────
 app.event('app_mention', async ({ event, client, logger }) => {
-  const raw = event.text || '';
-  const text = raw.replace(/<@[^>]+>\s*/g, '').trim();
-  logger.info(`mention: "${text}" in ${event.channel}`);
-
-  const m = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
-  if (!m) {
-    await client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: 'Hi! Try: `schedule "Meeting name" 30`'
+    const raw = event.text || '';
+    const text = raw.replace(/<@[^>]+>\s*/g, '').trim();
+    logger.info(`mention: "${text}" in ${event.channel}`);
+  
+    // Fast path: keep your strict syntax working for speed/consistency
+    const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
+    if (strict) {
+      const [, title, minutesStr] = strict;
+      const minutes = parseInt(minutesStr, 10);
+      await client.chat.postMessage({
+        channel: event.channel, thread_ts: event.ts, text: "On it."
+      });
+      try {
+        const { url, id } = await createSingleUseLink(title, minutes);
+        saveThread(event.channel, event.ts, { last_link_id: id });
+        return client.chat.postMessage({
+          channel: event.channel, thread_ts: event.ts,
+          text: `Done. ${url}`
+        });
+      } catch (e) {
+        logger.error(e);
+        return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: "Couldn’t create it. Try again?" });
+      }
+    }
+  
+    // Agentic path (only if enabled)
+    if (!AGENT_MODE) {
+      return client.chat.postMessage({
+        channel: event.channel, thread_ts: event.ts,
+        text: "Try: `schedule \"Meeting name\" 30`"
+      });
+    }
+  
+    const llm = initLLM();
+    const context = loadThread(event.channel, event.ts);
+    const routed = await routeWithLLM({ llm, text, context });
+  
+    if (!routed.intent && routed.missing.length) {
+      return client.chat.postMessage({
+        channel: event.channel, thread_ts: event.ts,
+        text: routed.missing[0]
+      });
+    }
+  
+    if (routed.intent === 'schedule_oneoff') {
+      const { title, minutes } = routed.slots || {};
+      if (!title || !minutes) {
+        return client.chat.postMessage({
+          channel: event.channel, thread_ts: event.ts,
+          text: 'I need a title and duration. Example: schedule "Intro with ACME" 30'
+        });
+      }
+      await client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: "On it." });
+      try {
+        const { url, id } = await createSingleUseLink(title, minutes);
+        saveThread(event.channel, event.ts, { last_link_id: id });
+        return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Done. ${url}` });
+      } catch (e) {
+        logger.error(e);
+        return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: "Couldn’t create it. Want me to try 30 minutes?" });
+      }
+    }
+  
+    if (routed.intent === 'disable_link') {
+      const { link_id } = routed.slots || {};
+      if (!link_id) {
+        return client.chat.postMessage({
+          channel: event.channel, thread_ts: event.ts,
+          text: "Which link should I disable? (If it’s the last one here, say “last link”.)"
+        });
+      }
+      try {
+        // your existing toggle endpoint if/when you wire it:
+        // await scToggle(link_id);
+        return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: "Disabled. Want me to create a new one?" });
+      } catch (e) {
+        logger.error(e);
+        return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: "Couldn’t disable it. Share the link ID?" });
+      }
+    }
+  
+    // Fallback
+    return client.chat.postMessage({
+      channel: event.channel, thread_ts: event.ts,
+      text: "I can schedule, disable a link, or draft a proposal. What do you need?"
     });
-    return;
-  }
-
-  const [, title, minutesStr] = m;
-  const minutes = parseInt(minutesStr, 10);
-
-  await client.chat.postMessage({
-    channel: event.channel,
-    thread_ts: event.ts,
-    text: `Creating single-use link for *${title}* (${minutes} min)…`
   });
-
-  try {
-    const { url } = await createSingleUseLink(title, minutes);
-    await client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: url,
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: `*${title}* (${minutes} min)\n${url}` } }
-      ]
-    });
-  } catch (e) {
-    logger.error(e);
-    await client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: `Couldn’t create the link: ${e.message}`
-    });
-  }
-});
+  
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Prod UX: Slash command /schedule (HTTP mode recommended)
