@@ -169,7 +169,8 @@ class AsanaService {
       assignee: assignee === 'me' ? 'me' : assignee,
       workspace: this.workspaceId,
       limit: limit.toString(),
-      opt_fields: 'name,notes,completed,due_on,due_at,projects.name,projects.gid,assignee.name,created_at,modified_at,permalink_url'
+      // Include more fields to help with filtering
+      opt_fields: 'name,notes,completed,due_on,due_at,projects.name,projects.gid,assignee.name,created_at,modified_at,permalink_url,resource_subtype,parent.name'
     });
 
     if (project) {
@@ -200,8 +201,35 @@ class AsanaService {
       }
 
       const result = await response.json();
-      console.log(`Retrieved ${result.data.length} tasks`);
-      return result.data;
+      let tasks = result.data;
+      
+      console.log(`Retrieved ${tasks.length} tasks from API`);
+      
+      // Filter out potentially problematic tasks
+      const filteredTasks = tasks.filter(task => {
+        // Keep tasks that have a name and aren't orphaned
+        const hasValidName = task.name && task.name.trim().length > 0;
+        const hasProjects = task.projects && task.projects.length > 0;
+        
+        // Log tasks we're filtering out for debugging
+        if (!hasValidName) {
+          console.log(`Filtering out task with no name: ${JSON.stringify(task)}`);
+        }
+        if (!hasProjects && project) {
+          console.log(`Filtering out task with no projects: ${task.name}`);
+        }
+        
+        return hasValidName && (project ? hasProjects : true);
+      });
+      
+      console.log(`After filtering: ${filteredTasks.length} tasks remaining`);
+      
+      // Log the first few task names for debugging
+      if (filteredTasks.length > 0) {
+        console.log(`Sample tasks: ${filteredTasks.slice(0, 3).map(t => t.name).join(', ')}`);
+      }
+      
+      return filteredTasks;
     } catch (error) {
       console.error('Error fetching Asana tasks:', error);
       throw error;

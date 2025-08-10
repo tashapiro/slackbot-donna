@@ -185,6 +185,10 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')(params);
       break;
       
+    case 'debug_tasks':
+      await ErrorHandler.wrapHandler(projectHandler.handleDebugTasks.bind(projectHandler), 'Asana')(params);
+      break;
+      
     case 'update_task':
       await ErrorHandler.wrapHandler(projectHandler.handleUpdateTask.bind(projectHandler), 'Asana')(params);
       break;

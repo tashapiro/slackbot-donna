@@ -53,13 +53,36 @@ class ProjectHandler {
             project: foundProject.gid,
             completed: false
           });
+          
+          console.log(`Found ${tasks.length} tasks in project ${foundProject.name}`);
+          
+          // Additional client-side filtering to remove any problematic tasks
+          tasks = tasks.filter(task => {
+            // Ensure task has valid data and isn't deleted/orphaned
+            const isValid = task.name && 
+                           task.name.trim().length > 0 && 
+                           task.projects && 
+                           task.projects.length > 0;
+            
+            if (!isValid) {
+              console.log(`Filtering out invalid task: ${task.name || 'unnamed'}`);
+            }
+            
+            return isValid;
+          });
+          
+          console.log(`After additional filtering: ${tasks.length} valid tasks`);
+          
         } catch (projectError) {
           console.log('Project-specific query failed, trying alternative approach:', projectError.message);
           
           // Fallback: get all user tasks and filter client-side
           const allTasks = await asanaService.getTasks({ completed: false, limit: 100 });
           tasks = allTasks.filter(task => 
-            task.projects && task.projects.some(p => p.gid === foundProject.gid || p.name === foundProject.name)
+            task.projects && 
+            task.projects.some(p => p.gid === foundProject.gid || p.name === foundProject.name) &&
+            task.name && 
+            task.name.trim().length > 0
           );
         }
         
