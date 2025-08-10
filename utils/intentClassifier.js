@@ -25,6 +25,7 @@ CALENDAR:
 
 PROJECTS:
 - "list_tasks" -> slots: { "project": string?, "assignee": string?, "due_date": string?, "status": string? }
+- "list_projects" -> slots: {} (for queries like "what projects are available", "show me projects", "list all projects")
 - "update_task" -> slots: { "task_id": string, "field": string, "value": string }
 - "create_task" -> slots: { "name": string, "project": string?, "due_date": string?, "notes": string? }
 - "complete_task" -> slots: { "task_id": string }
@@ -43,6 +44,13 @@ Rules:
 - For time periods: "today", "yesterday", "this week", "last week", "this month", "last month", "this year", "last year", "year to date"
 - Keep work "slots" minimal, only values needed by the intent
 - For disable_link, if context.last_link_id exists, use it
+
+Common intent patterns:
+- "what projects are available/show me projects/list projects" → list_projects
+- "what tasks do I have/show my tasks/tasks due today" → list_tasks  
+- "create task/add task/new task" → create_task
+- "mark complete/finish task/complete task" → complete_task or update_task
+- "daily rundown/what's on deck/morning briefing" → daily_rundown
 `;
 
 class IntentClassifier {

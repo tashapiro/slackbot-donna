@@ -303,6 +303,14 @@ app.event('app_mention', async ({ event, client, logger }) => {
     });
   }
 
+  // Fast path for common commands
+  if (text.match(/what projects|list projects|show.*projects|available projects/i)) {
+    await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
+      slots: {}, client, channel: event.channel, thread_ts: event.ts
+    });
+    return;
+  }
+
   // Fast path for exact scheduling commands (backward compatibility)
   const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
   if (strict) {
