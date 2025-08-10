@@ -130,7 +130,7 @@ const handleScheduling = ErrorHandler.wrapHandler(async ({ slots, client, channe
     );
   }
 
-  await client.chat.postMessage({ channel, thread_ts, text: 'On it.' });
+  await client.chat.postMessage({ channel, thread_ts, text: 'On it. This is what I do.' });
   
   const { url, id } = await createSingleUseLink(title, minutes);
   dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
@@ -138,7 +138,7 @@ const handleScheduling = ErrorHandler.wrapHandler(async ({ slots, client, channe
   await client.chat.postMessage({ 
     channel, 
     thread_ts, 
-    text: `Done. ${url}` 
+    text: `Done. ${url}\n\nYou can thank me now. I don't mind.` 
   });
 }, 'SavvyCal');
 
@@ -152,7 +152,7 @@ const handleLinkDisabling = ErrorHandler.wrapHandler(async ({ slots, client, cha
   await client.chat.postMessage({ 
     channel, 
     thread_ts, 
-    text: '✅ Disabled.' 
+    text: '✅ Disabled. Of course I handled it perfectly.' 
   });
 }, 'SavvyCal');
 
@@ -220,7 +220,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: response || "I'm here to help with whatever you need!"
+        text: response || "I'm here to help with whatever you need. And trust me, I'm very good at what I do."
       });
       break;
       
@@ -228,7 +228,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: 'I can help with scheduling, time tracking, task management, and more. What do you need?'
+        text: 'I can handle scheduling, time tracking, task management, and pretty much anything else you throw at me. What do you need?'
       });
   }
 }
@@ -333,7 +333,7 @@ app.event('app_mention', async ({ event, client, logger }) => {
     return client.chat.postMessage({
       channel: event.channel, 
       thread_ts: event.ts,
-      text: 'Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
+      text: 'My AI brain is offline right now, but I can still handle basics. Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
     });
   }
 
@@ -378,7 +378,7 @@ function handleSimpleQuestions(text) {
       month: 'long',
       day: 'numeric'
     });
-    return `It's ${timeString} ET on ${dateString}.`;
+    return `It's ${timeString} ET on ${dateString}. Of course I know — I'm Donna.`;
   }
   
   if (lowerText.match(/what.*date|today.*date|current date/)) {
@@ -389,7 +389,7 @@ function handleSimpleQuestions(text) {
       month: 'long', 
       day: 'numeric'
     });
-    return `Today is ${today}.`;
+    return `Today is ${today}. You can thank me later for keeping you on track.`;
   }
   
   return null; // Let LLM handle everything else for more natural conversation
@@ -406,21 +406,23 @@ setInterval(() => {
 
 (async () => {
   await app.start(PORT);
-  console.log(`⚡ Enhanced Donna running in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
-  console.log('📊 New capabilities: Time tracking with Toggl, Task management with Asana');
+  console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
+  console.log('💼 Ready to handle: Scheduling, Time Tracking, Task Management & Whatever Else You Need');
   
   // Test API connections on startup
   try {
     await togglService.getWorkspaces();
-    console.log('✅ Toggl connection verified');
+    console.log('✅ Toggl connection verified - Time tracking ready');
   } catch (error) {
     console.warn('⚠️ Toggl connection failed:', error.message);
   }
 
   try {
     await asanaService.getWorkspaces();
-    console.log('✅ Asana connection verified');
+    console.log('✅ Asana connection verified - Task management ready');
   } catch (error) {
     console.warn('⚠️ Asana connection failed:', error.message);
   }
+  
+  console.log('🎯 Donna is ready to make your life easier. Because that\'s what she does.');
 })();

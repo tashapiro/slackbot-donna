@@ -169,28 +169,38 @@ class AsanaService {
       assignee: assignee === 'me' ? 'me' : assignee,
       workspace: this.workspaceId,
       limit: limit.toString(),
-      opt_fields: 'name,notes,completed,due_on,due_at,projects.name,assignee.name,created_at,modified_at,permalink_url'
+      opt_fields: 'name,notes,completed,due_on,due_at,projects.name,projects.gid,assignee.name,created_at,modified_at,permalink_url'
     });
 
-    if (project) params.append('project', project);
+    if (project) {
+      console.log(`Adding project filter: ${project}`);
+      params.append('project', project);
+    }
     if (completed_since) params.append('completed_since', completed_since);
     if (due_on) params.append('due_on', due_on);
     if (due_before) params.append('due_before', due_before);
     if (due_after) params.append('due_after', due_after);
-    if (completed !== null) params.append('completed', completed.toString());
+    if (completed !== null) {
+      console.log(`Adding completed filter: ${completed}`);
+      params.append('completed', completed.toString());
+    }
+
+    const url = `${this.baseUrl}/tasks?${params}`;
+    console.log(`Asana API call: ${url}`);
 
     try {
-      const response = await fetch(
-        `${this.baseUrl}/tasks?${params}`,
-        { headers: this.getAuthHeaders() }
-      );
+      const response = await fetch(url, {
+        headers: this.getAuthHeaders()
+      });
 
       if (!response.ok) {
         const errorText = await response.text();
+        console.error(`Asana API error response: ${errorText}`);
         throw new Error(`Asana API error: ${response.status} ${response.statusText} - ${errorText}`);
       }
 
       const result = await response.json();
+      console.log(`Retrieved ${result.data.length} tasks`);
       return result.data;
     } catch (error) {
       console.error('Error fetching Asana tasks:', error);

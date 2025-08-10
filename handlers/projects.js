@@ -44,10 +44,25 @@ class ProjectHandler {
           });
         }
         
-        tasks = await asanaService.getTasks({ 
-          project: foundProject.gid,
-          completed: false // Get only incomplete tasks
-        });
+        console.log(`Found project: ${foundProject.name} (ID: ${foundProject.gid})`);
+        
+        // Try different approach - get all tasks then filter by project
+        try {
+          // First try: get tasks for specific project
+          tasks = await asanaService.getTasks({ 
+            project: foundProject.gid,
+            completed: false
+          });
+        } catch (projectError) {
+          console.log('Project-specific query failed, trying alternative approach:', projectError.message);
+          
+          // Fallback: get all user tasks and filter client-side
+          const allTasks = await asanaService.getTasks({ completed: false, limit: 100 });
+          tasks = allTasks.filter(task => 
+            task.projects && task.projects.some(p => p.gid === foundProject.gid || p.name === foundProject.name)
+          );
+        }
+        
         title = `*Tasks in ${foundProject.name}:*`;
       } else {
         // Default: show user's tasks for this week
