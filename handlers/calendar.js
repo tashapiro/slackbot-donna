@@ -11,8 +11,8 @@ class CalendarHandler {
       let events = [];
       let title = '';
       
-      if (date) {
-        // Specific date requested
+      if (date && date !== 'today' && date !== 'tomorrow') {
+        // Specific date requested (not today/tomorrow keywords)
         events = await googleCalendarService.getEventsForDate(date);
         const dateObj = new Date(date);
         title = `*Meetings on ${dateObj.toLocaleDateString('en-US', { 
@@ -22,8 +22,10 @@ class CalendarHandler {
           timeZone: 'America/New_York'
         })}:*`;
       } else {
-        // Period-based request
-        switch (period.toLowerCase()) {
+        // Period-based or keyword-based request
+        const requestedPeriod = date || period; // Use date if it's 'today'/'tomorrow', otherwise use period
+        
+        switch (requestedPeriod.toLowerCase()) {
           case 'today':
             events = await googleCalendarService.getEventsToday();
             title = '*Today\'s meetings:*';
@@ -33,7 +35,12 @@ class CalendarHandler {
             const tomorrow = new Date();
             tomorrow.setDate(tomorrow.getDate() + 1);
             events = await googleCalendarService.getEventsForDate(tomorrow);
-            title = '*Tomorrow\'s meetings:*';
+            title = `*Tomorrow's meetings (${tomorrow.toLocaleDateString('en-US', { 
+              weekday: 'long', 
+              month: 'long', 
+              day: 'numeric',
+              timeZone: 'America/New_York'
+            })}):*`;
             break;
             
           case 'this week':
@@ -49,9 +56,23 @@ class CalendarHandler {
       }
       
       if (events.length === 0) {
-        const freeMessage = period === 'today' ? 
-          'Your calendar is clear today! Time to tackle that task list.' :
-          `No meetings scheduled for ${period}. Lucky you.`;
+        const requestedPeriod = date || period;
+        let freeMessage;
+        
+        switch (requestedPeriod.toLowerCase()) {
+          case 'today':
+            freeMessage = 'Your calendar is clear today! Time to tackle that task list.';
+            break;
+          case 'tomorrow':
+            freeMessage = 'Nothing on the books tomorrow. Perfect day for deep work.';
+            break;
+          case 'this week':
+          case 'week':
+            freeMessage = 'Light week ahead! Good time to plan your next moves.';
+            break;
+          default:
+            freeMessage = `No meetings scheduled for ${requestedPeriod}. Lucky you.`;
+        }
           
         return await client.chat.postMessage({
           channel,

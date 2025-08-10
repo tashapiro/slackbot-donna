@@ -454,6 +454,13 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     return;
   }
 
+  if (text.match(/what meetings.*tomorrow|meetings tomorrow|calendar tomorrow/i)) {
+    await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')({
+      slots: { date: 'tomorrow' }, client, channel, thread_ts: responseThreadTs
+    });
+    return;
+  }
+
   // Fast path for exact scheduling commands (backward compatibility)
   const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
   if (strict) {
