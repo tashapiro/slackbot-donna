@@ -26,6 +26,9 @@ CALENDAR:
 PROJECTS:
 - "list_tasks" -> slots: { "project": string?, "assignee": string?, "due_date": string?, "status": string? }
 - "update_task" -> slots: { "task_id": string, "field": string, "value": string }
+- "create_task" -> slots: { "name": string, "project": string?, "due_date": string?, "notes": string? }
+- "complete_task" -> slots: { "task_id": string }
+- "daily_rundown" -> slots: {}
 
 GENERAL:
 - "draft_copy" -> slots: { "type": string, "context": string, "tone": string?, "recipient": string? }

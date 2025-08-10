@@ -7,7 +7,9 @@ const IntentClassifier = require('./utils/intentClassifier');
 const dataStore = require('./utils/dataStore');
 const ErrorHandler = require('./utils/errorHandler');
 const timeTrackingHandler = require('./handlers/timeTracking');
+const projectHandler = require('./handlers/projects');
 const togglService = require('./services/toggl');
+const asanaService = require('./services/asana');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment & Configuration
@@ -175,6 +177,41 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeQuery.bind(timeTrackingHandler), 'Toggl')(params);
       break;
       
+    case 'list_tasks':
+      await ErrorHandler.wrapHandler(projectHandler.handleListTasks.bind(projectHandler), 'Asana')(params);
+      break;
+      
+    case 'update_task':
+      await ErrorHandler.wrapHandler(projectHandler.handleUpdateTask.bind(projectHandler), 'Asana')(params);
+      break;
+      
+    case 'create_task':
+      await ErrorHandler.wrapHandler(projectHandler.handleCreateTask.bind(projectHandler), 'Asana')(params);
+      break;
+      
+    case 'complete_task':
+      // Handle as a specific case of update_task
+      await ErrorHandler.wrapHandler(async (params) => {
+        const { slots } = params;
+        const updateParams = {
+          ...params,
+          slots: { ...slots, field: 'completed', value: 'true' }
+        };
+        await projectHandler.handleUpdateTask(updateParams);
+      }, 'Asana')(params);
+      break;
+      
+    case 'daily_rundown':
+      await ErrorHandler.wrapHandler(async ({ client, channel, thread_ts }) => {
+        const rundown = await projectHandler.generateDailyRundown();
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: rundown
+        });
+      }, 'Asana')(params);
+      break;
+      
     case 'general_chat':
       await client.chat.postMessage({
         channel,
@@ -187,7 +224,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: 'I can help with scheduling, time tracking, and more. What do you need?'
+        text: 'I can help with scheduling, time tracking, task management, and more. What do you need?'
       });
   }
 }
@@ -358,13 +395,20 @@ setInterval(() => {
 (async () => {
   await app.start(PORT);
   console.log(`⚡ Enhanced Donna running in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
-  console.log('📊 New capabilities: Time tracking with Toggl');
+  console.log('📊 New capabilities: Time tracking with Toggl, Task management with Asana');
   
-  // Test Toggl connection on startup
+  // Test API connections on startup
   try {
     await togglService.getWorkspaces();
     console.log('✅ Toggl connection verified');
   } catch (error) {
     console.warn('⚠️ Toggl connection failed:', error.message);
+  }
+
+  try {
+    await asanaService.getWorkspaces();
+    console.log('✅ Asana connection verified');
+  } catch (error) {
+    console.warn('⚠️ Asana connection failed:', error.message);
   }
 })();
