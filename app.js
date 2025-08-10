@@ -1,4 +1,4 @@
-// app.js — Enhanced Donna with Toggl time tracking integration
+// app.js — Enhanced Donna with Thread Conversation Tracking
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 
@@ -114,6 +114,103 @@ if (SOCKET_MODE) {
   receiver.router.use((req, _res, next) => { console.log(`[http] ${req.method} ${req.url}`); next(); });
   receiver.router.get('/', (_req, res) => res.send('OK'));
   app = new App({ token: SLACK_BOT_TOKEN, receiver });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Thread conversation tracking
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Track which threads Donna is actively participating in
+function markThreadAsActive(channel, thread_ts, userId) {
+  const threadKey = `${channel}::${thread_ts}`;
+  dataStore.setThreadData(channel, thread_ts, { 
+    donnaActive: true, 
+    startedBy: userId,
+    lastActivity: Date.now()
+  });
+  console.log(`Donna is now active in thread: ${threadKey}`);
+}
+
+function isThreadActive(channel, thread_ts) {
+  if (!thread_ts) return false; // Not a thread
+  const threadData = dataStore.getThreadData(channel, thread_ts);
+  
+  // Check if thread is active and not too old (24 hours)
+  const isActive = threadData.donnaActive === true;
+  const isRecent = threadData.lastActivity && (Date.now() - threadData.lastActivity) < 24 * 60 * 60 * 1000;
+  
+  return isActive && isRecent;
+}
+
+function updateThreadActivity(channel, thread_ts) {
+  if (isThreadActive(channel, thread_ts)) {
+    dataStore.setThreadData(channel, thread_ts, { lastActivity: Date.now() });
+  }
+}
+
+function deactivateThread(channel, thread_ts) {
+  dataStore.setThreadData(channel, thread_ts, { donnaActive: false });
+  console.log(`Donna left thread: ${channel}::${thread_ts}`);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Donna's personality helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Donna's signature opening lines (rotate for variety)
+const donnaOpeningLines = [
+  "You're here for answers. Lucky for you, I already have them.",
+  "Let's skip the small talk — what's the real problem?",
+  "Before you ask, yes, I've already thought of that.",
+  "You clearly need my help. Good thing I'm Donna.",
+  "I could tell you you're in good hands… but you already know that.",
+  "Alright, let's cut to the chase — what are we solving today?",
+  "I read people for a living. You're no exception."
+];
+
+function getRandomOpeningLine() {
+  return donnaOpeningLines[Math.floor(Math.random() * donnaOpeningLines.length)];
+}
+
+// Simple question handler for basic queries
+function handleSimpleQuestions(text) {
+  const lowerText = text.toLowerCase().trim();
+  
+  // Handle greetings with opening lines
+  if (lowerText.match(/^(hi|hello|hey|good morning|good afternoon|donna|what's up|how are you)$/)) {
+    return getRandomOpeningLine();
+  }
+  
+  // Only handle very specific time/date queries that don't need personality
+  if (lowerText.match(/what time is it|current time|time right now/)) {
+    const now = new Date();
+    const timeString = now.toLocaleTimeString('en-US', { 
+      timeZone: 'America/New_York',
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+    const dateString = now.toLocaleDateString('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric'
+    });
+    return `It's ${timeString} ET on ${dateString}. I'm Donna. That's the whole explanation.`;
+  }
+  
+  if (lowerText.match(/what.*date|today.*date|current date/)) {
+    const today = new Date().toLocaleDateString('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long', 
+      day: 'numeric'
+    });
+    return `Today is ${today}. I already took care of knowing that for you.`;
+  }
+  
+  return null; // Let LLM handle everything else for more natural conversation
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -240,6 +337,129 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Main message processing function
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Handle both mention and regular message processing
+async function processDonnaMessage(text, event, client, logger, isMention = true) {
+  const { channel, user, ts, thread_ts } = event;
+  
+  // If this is a mention, mark thread as active
+  if (isMention && thread_ts) {
+    markThreadAsActive(channel, thread_ts, user);
+  }
+  
+  // Update activity for active threads
+  if (thread_ts) {
+    updateThreadActivity(channel, thread_ts);
+  }
+
+  logger.info(`${isMention ? 'mention' : 'message'}: "${text}" in ${channel}${thread_ts ? ` (thread: ${thread_ts})` : ''}`);
+
+  // Handle empty mentions or just "Donna" with opening lines
+  if (!text || text.length === 0) {
+    return client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: getRandomOpeningLine()
+    });
+  }
+
+  // Handle simple greetings with opening lines first
+  const simpleResponse = handleSimpleQuestions(text);
+  if (simpleResponse) {
+    return client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: simpleResponse
+    });
+  }
+
+  // Check for exit commands in threads
+  if (thread_ts && text.match(/^(bye|goodbye|thanks|thank you|done|exit|leave)$/i)) {
+    deactivateThread(channel, thread_ts);
+    const exitResponses = [
+      "I'm always here when you need me.",
+      "You know where to find me.",
+      "Call me when you need the best.",
+      "I already took care of everything else.",
+      "My work here is done."
+    ];
+    const exitResponse = exitResponses[Math.floor(Math.random() * exitResponses.length)];
+    return client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: exitResponse
+    });
+  }
+
+  // Fast path for common commands
+  if (text.match(/what projects|list projects|show.*projects|available projects/i)) {
+    await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
+      slots: {}, client, channel, thread_ts
+    });
+    return;
+  }
+
+  // Fast path for exact scheduling commands (backward compatibility)
+  const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
+  if (strict) {
+    const [, title, minutesStr] = strict;
+    const minutes = parseInt(minutesStr, 10);
+
+    await client.chat.postMessage({ channel, thread_ts, text: 'Already on it. This is what I do.' });
+    try {
+      const { url, id } = await createSingleUseLink(title, minutes);
+      dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
+      return client.chat.postMessage({ channel, thread_ts, text: `Done. ${url}\n\nI already took care of it. You're welcome.` });
+    } catch (e) {
+      logger.error(e);
+      return ErrorHandler.handleApiError(e, client, channel, thread_ts, 'SavvyCal');
+    }
+  }
+
+  // Enhanced agentic path
+  if (!AGENT_MODE || !intentClassifier.llm) {
+    return client.chat.postMessage({
+      channel, 
+      thread_ts,
+      text: 'My AI brain is taking a coffee break, but I can still handle the basics. Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
+    });
+  }
+
+  try {
+    const context = dataStore.getThreadData(channel, thread_ts);
+    const routed = await intentClassifier.classify({ text, context });
+
+    // Handle missing information
+    if (!routed.intent && routed.missing?.length) {
+      // Add some Donna flair to clarification requests
+      const clarificationPrefixes = [
+        "Let's skip the small talk — ",
+        "Before you ask, yes, I've already thought of that. But ",
+        "I read people for a living. You're no exception. ",
+        "",  // Sometimes just be direct
+        ""
+      ];
+      const prefix = clarificationPrefixes[Math.floor(Math.random() * clarificationPrefixes.length)];
+      
+      return client.chat.postMessage({
+        channel, 
+        thread_ts,
+        text: `${prefix}${routed.missing[0]}`
+      });
+    }
+
+    // Route to appropriate handler
+    await handleIntent(routed.intent, routed.slots, client, channel, thread_ts, routed.response);
+    
+  } catch (error) {
+    logger.error('Enhanced message handler error:', error);
+    await ErrorHandler.handleApiError(error, client, channel, thread_ts);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Slash command (existing functionality)
 // ─────────────────────────────────────────────────────────────────────────────
 app.command('/schedule', async ({ command, ack, respond }) => {
@@ -292,187 +512,32 @@ app.action('sc_disable', async ({ ack, body, client }) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Event handlers
 // ─────────────────────────────────────────────────────────────────────────────
-// Thread conversation tracking
-// ─────────────────────────────────────────────────────────────────────────────
 
-// Track which threads Donna is actively participating in
-function markThreadAsActive(channel, thread_ts, userId) {
-  const threadKey = `${channel}::${thread_ts}`;
-  dataStore.setThreadData(channel, thread_ts, { 
-    donnaActive: true, 
-    startedBy: userId,
-    lastActivity: Date.now()
-  });
-  console.log(`Donna is now active in thread: ${threadKey}`);
-}
+// Handle @mentions (always respond)
+app.event('app_mention', async ({ event, client, logger }) => {
+  const raw = event.text || '';
+  const text = raw.replace(/<@[^>]+>\s*/g, '').trim();
+  await processDonnaMessage(text, event, client, logger, true);
+});
 
-function isThreadActive(channel, thread_ts) {
-  if (!thread_ts) return false; // Not a thread
-  const threadData = dataStore.getThreadData(channel, thread_ts);
+// Handle regular messages in active threads
+app.event('message', async ({ event, client, logger }) => {
+  // Skip if it's a bot message, has no thread, or thread isn't active
+  if (event.bot_id || !event.thread_ts || !isThreadActive(event.channel, event.thread_ts)) {
+    return;
+  }
   
-  // Check if thread is active and not too old (24 hours)
-  const isActive = threadData.donnaActive === true;
-  const isRecent = threadData.lastActivity && (Date.now() - threadData.lastActivity) < 24 * 60 * 60 * 1000;
-  
-  return isActive && isRecent;
-}
-
-function updateThreadActivity(channel, thread_ts) {
-  if (isThreadActive(channel, thread_ts)) {
-    dataStore.setThreadData(channel, thread_ts, { lastActivity: Date.now() });
-  }
-}
-
-function deactivateThread(channel, thread_ts) {
-  dataStore.setThreadData(channel, thread_ts, { donnaActive: false });
-  console.log(`Donna left thread: ${channel}::${thread_ts}`);
-}
-
-// Handle both mention and regular message processing
-async function processDonnaMessage(text, event, client, logger, isMention = true) {
-  const { channel, user, ts, thread_ts } = event;
-
-  // Handle empty mentions or just "Donna" with opening lines
-  if (!text || text.length === 0) {
-    return client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: getRandomOpeningLine()
-    });
-  }
-
-  // Handle simple greetings with opening lines first
-  const simpleResponse = handleSimpleQuestions(text);
-  if (simpleResponse) {
-    return client.chat.postMessage({
-      channel: event.channel,
-      thread_ts: event.ts,
-      text: simpleResponse
-    });
-  }
-
-  // Fast path for common commands
-  if (text.match(/what projects|list projects|show.*projects|available projects/i)) {
-    await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
-      slots: {}, client, channel: event.channel, thread_ts: event.ts
-    });
+  // Skip if it's a mention (already handled by app_mention)
+  if (event.text && event.text.includes('<@')) {
     return;
   }
 
-  // Fast path for exact scheduling commands (backward compatibility)
-  const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
-  if (strict) {
-    const [, title, minutesStr] = strict;
-    const minutes = parseInt(minutesStr, 10);
-
-    await client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: 'On it.' });
-    try {
-      const { url, id } = await createSingleUseLink(title, minutes);
-      dataStore.setThreadData(event.channel, event.ts, { last_link_id: id });
-      return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Done. ${url}` });
-    } catch (e) {
-      logger.error(e);
-      return ErrorHandler.handleApiError(e, client, event.channel, event.ts, 'SavvyCal');
-    }
-  }
-
-  // Enhanced agentic path
-  if (!AGENT_MODE || !intentClassifier.llm) {
-    return client.chat.postMessage({
-      channel: event.channel, 
-      thread_ts: event.ts,
-      text: 'My AI brain is taking a coffee break, but I can still handle the basics. Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
-    });
-  }
-
-  try {
-    const context = dataStore.getThreadData(event.channel, event.ts);
-    const routed = await intentClassifier.classify({ text, context });
-
-    // Handle missing information
-    if (!routed.intent && routed.missing?.length) {
-      // Add some Donna flair to clarification requests
-      const clarificationPrefixes = [
-        "Let's skip the small talk — ",
-        "Before you ask, yes, I've already thought of that. But ",
-        "I read people for a living. You're no exception. ",
-        "",  // Sometimes just be direct
-        ""
-      ];
-      const prefix = clarificationPrefixes[Math.floor(Math.random() * clarificationPrefixes.length)];
-      
-      return client.chat.postMessage({
-        channel: event.channel, 
-        thread_ts: event.ts,
-        text: `${prefix}${routed.missing[0]}`
-      });
-    }
-
-    // Route to appropriate handler
-    await handleIntent(routed.intent, routed.slots, client, event.channel, event.ts, routed.response);
-    
-  } catch (error) {
-    logger.error('Enhanced mention handler error:', error);
-    await ErrorHandler.handleApiError(error, client, event.channel, event.ts);
-  }
+  // Process as regular thread message
+  const text = event.text || '';
+  await processDonnaMessage(text, event, client, logger, false);
 });
-
-// Donna's signature opening lines (rotate for variety)
-const donnaOpeningLines = [
-  "You're here for answers. Lucky for you, I already have them.",
-  "Let's skip the small talk — what's the real problem?",
-  "Before you ask, yes, I've already thought of that.",
-  "You clearly need my help. Good thing I'm Donna.",
-  "I could tell you you're in good hands… but you already know that.",
-  "Alright, let's cut to the chase — what are we solving today?",
-  "I read people for a living. You're no exception."
-];
-
-function getRandomOpeningLine() {
-  return donnaOpeningLines[Math.floor(Math.random() * donnaOpeningLines.length)];
-}
-
-// Simple question handler for basic queries
-function handleSimpleQuestions(text) {
-  const lowerText = text.toLowerCase().trim();
-  
-  // Handle greetings with opening lines
-  if (lowerText.match(/^(hi|hello|hey|good morning|good afternoon|donna|what's up|how are you)$/)) {
-    return getRandomOpeningLine();
-  }
-  
-  // Only handle very specific time/date queries that don't need personality
-  if (lowerText.match(/what time is it|current time|time right now/)) {
-    const now = new Date();
-    const timeString = now.toLocaleTimeString('en-US', { 
-      timeZone: 'America/New_York',
-      hour: 'numeric', 
-      minute: '2-digit',
-      hour12: true 
-    });
-    const dateString = now.toLocaleDateString('en-US', {
-      timeZone: 'America/New_York',
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric'
-    });
-    return `It's ${timeString} ET on ${dateString}. I'm Donna. That's the whole explanation.`;
-  }
-  
-  if (lowerText.match(/what.*date|today.*date|current date/)) {
-    const today = new Date().toLocaleDateString('en-US', {
-      timeZone: 'America/New_York',
-      weekday: 'long',
-      year: 'numeric',
-      month: 'long', 
-      day: 'numeric'
-    });
-    return `Today is ${today}. I already took care of knowing that for you.`;
-  }
-  
-  return null; // Let LLM handle everything else for more natural conversation
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cleanup and startup
