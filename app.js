@@ -244,6 +244,16 @@ app.event('app_mention', async ({ event, client, logger }) => {
   const text = raw.replace(/<@[^>]+>\s*/g, '').trim();
   logger.info(`mention: "${text}" in ${event.channel}`);
 
+  // Handle simple questions before intent classification
+  const simpleResponse = handleSimpleQuestions(text);
+  if (simpleResponse) {
+    return client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.ts,
+      text: simpleResponse
+    });
+  }
+
   // Fast path for exact scheduling commands (backward compatibility)
   const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
   if (strict) {
@@ -291,6 +301,80 @@ app.event('app_mention', async ({ event, client, logger }) => {
     await ErrorHandler.handleApiError(error, client, event.channel, event.ts);
   }
 });
+
+// Simple question handler for basic queries
+function handleSimpleQuestions(text) {
+  const lowerText = text.toLowerCase().trim();
+  
+  // Time and date questions
+  if (lowerText.match(/what time is it|current time|time right now/)) {
+    const now = new Date();
+    const timeString = now.toLocaleTimeString('en-US', { 
+      timeZone: 'America/New_York',
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+    const dateString = now.toLocaleDateString('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric'
+    });
+    return `It's ${timeString} ET on ${dateString}.`;
+  }
+  
+  if (lowerText.match(/what.*date|today.*date|current date/)) {
+    const today = new Date().toLocaleDateString('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long', 
+      day: 'numeric'
+    });
+    return `Today is ${today}.`;
+  }
+  
+  // Greeting responses
+  if (lowerText.match(/^(hi|hello|hey|good morning|good afternoon)$/)) {
+    const greetings = [
+      "Hey there! What can I help you with?",
+      "Hello! Ready to tackle some work?", 
+      "Hi! What's on the agenda today?",
+      "Hey! How can I assist you?"
+    ];
+    return greetings[Math.floor(Math.random() * greetings.length)];
+  }
+  
+  // Status questions
+  if (lowerText.match(/how are you|how's it going|what's up/)) {
+    const responses = [
+      "I'm doing great! Ready to help with scheduling, time tracking, and more.",
+      "All systems running smoothly! What do you need?",
+      "I'm here and ready to help. What's the plan?",
+      "Doing well! Got any meetings to schedule or time to log?"
+    ];
+    return responses[Math.floor(Math.random() * responses.length)];
+  }
+  
+  // Help requests
+  if (lowerText.match(/help|what can you do|capabilities|commands/)) {
+    return `I can help you with:
+    
+*⏰ Scheduling:* "schedule 'Meeting name' 30"
+*📊 Time Tracking:* "how many hours did I log today?" or "log 2 hours to ProjectName"
+*💬 General Chat:* Ask me the time, date, or just say hi!
+
+What would you like to do?`;
+  }
+  
+  // Thanks responses
+  if (lowerText.match(/^(thanks|thank you|thx)$/)) {
+    return "You're welcome! Let me know if you need anything else.";
+  }
+  
+  return null; // No simple response found, continue to intent classification
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Cleanup and startup

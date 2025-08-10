@@ -27,12 +27,14 @@ PROJECTS:
 
 GENERAL:
 - "draft_copy" -> slots: { "type": string, "context": string, "tone": string?, "recipient": string? }
+- "general_query" -> slots: { "question": string }
+- "casual_chat" -> slots: { "message": string }
 
 Rules:
 - If you can't determine an intent, set intent to "" and put a single clear question in "missing"
 - If info is missing for the chosen intent, put missing field names or a single question in "missing"
 - For time logging, be flexible with natural language time formats
-- For periods: "today", "yesterday", "this week", "last week", "this month", etc.
+- For periods: "today", "yesterday", "this week", "last week", "this month", "last month", "this year", "last year", "year to date"
 - Keep "slots" minimal, only the values needed by the chosen intent
 - For disable_link, if context.last_link_id exists, use it instead of asking
 `;
@@ -132,8 +134,10 @@ class IntentClassifier {
       'last week': 'last_week',
       'this month': 'this_month',
       'last month': 'last_month',
+      'this year': 'year_to_date',
       'year to date': 'year_to_date',
-      'ytd': 'year_to_date'
+      'ytd': 'year_to_date',
+      'last year': 'last_year'
     };
     return periodMap[p] || p;
   }
