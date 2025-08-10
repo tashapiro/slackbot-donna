@@ -130,7 +130,7 @@ const handleScheduling = ErrorHandler.wrapHandler(async ({ slots, client, channe
     );
   }
 
-  await client.chat.postMessage({ channel, thread_ts, text: 'On it. This is what I do.' });
+  await client.chat.postMessage({ channel, thread_ts, text: 'Already on it. This is what I do.' });
   
   const { url, id } = await createSingleUseLink(title, minutes);
   dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
@@ -138,7 +138,7 @@ const handleScheduling = ErrorHandler.wrapHandler(async ({ slots, client, channe
   await client.chat.postMessage({ 
     channel, 
     thread_ts, 
-    text: `Done. ${url}\n\nYou can thank me now. I don't mind.` 
+    text: `Done. ${url}\n\nI already took care of it. You're welcome.` 
   });
 }, 'SavvyCal');
 
@@ -152,7 +152,7 @@ const handleLinkDisabling = ErrorHandler.wrapHandler(async ({ slots, client, cha
   await client.chat.postMessage({ 
     channel, 
     thread_ts, 
-    text: '✅ Disabled. Of course I handled it perfectly.' 
+    text: '✅ Disabled. Please. I\'ve handled worse before breakfast.' 
   });
 }, 'SavvyCal');
 
@@ -224,15 +224,17 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: response || "I'm here to help with whatever you need. And trust me, I'm very good at what I do."
+        text: response || "You clearly need my help. Good thing I'm Donna."
       });
       break;
       
     default:
+      // Use a random opening line for unknown requests
+      const openingLine = getRandomOpeningLine();
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: 'I can handle scheduling, time tracking, task management, and pretty much anything else you throw at me. What do you need?'
+        text: `${openingLine}\n\nI handle scheduling, time tracking, task management, and pretty much everything else.`
       });
   }
 }
@@ -290,14 +292,57 @@ app.action('sc_disable', async ({ ack, body, client }) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Enhanced mention handler with expanded functionality
 // ─────────────────────────────────────────────────────────────────────────────
-app.event('app_mention', async ({ event, client, logger }) => {
-  const raw = event.text || '';
-  const text = raw.replace(/<@[^>]+>\s*/g, '').trim();
-  logger.info(`mention: "${text}" in ${event.channel}`);
+// Thread conversation tracking
+// ─────────────────────────────────────────────────────────────────────────────
 
-  // Handle simple questions before intent classification
+// Track which threads Donna is actively participating in
+function markThreadAsActive(channel, thread_ts, userId) {
+  const threadKey = `${channel}::${thread_ts}`;
+  dataStore.setThreadData(channel, thread_ts, { 
+    donnaActive: true, 
+    startedBy: userId,
+    lastActivity: Date.now()
+  });
+  console.log(`Donna is now active in thread: ${threadKey}`);
+}
+
+function isThreadActive(channel, thread_ts) {
+  if (!thread_ts) return false; // Not a thread
+  const threadData = dataStore.getThreadData(channel, thread_ts);
+  
+  // Check if thread is active and not too old (24 hours)
+  const isActive = threadData.donnaActive === true;
+  const isRecent = threadData.lastActivity && (Date.now() - threadData.lastActivity) < 24 * 60 * 60 * 1000;
+  
+  return isActive && isRecent;
+}
+
+function updateThreadActivity(channel, thread_ts) {
+  if (isThreadActive(channel, thread_ts)) {
+    dataStore.setThreadData(channel, thread_ts, { lastActivity: Date.now() });
+  }
+}
+
+function deactivateThread(channel, thread_ts) {
+  dataStore.setThreadData(channel, thread_ts, { donnaActive: false });
+  console.log(`Donna left thread: ${channel}::${thread_ts}`);
+}
+
+// Handle both mention and regular message processing
+async function processDonnaMessage(text, event, client, logger, isMention = true) {
+  const { channel, user, ts, thread_ts } = event;
+
+  // Handle empty mentions or just "Donna" with opening lines
+  if (!text || text.length === 0) {
+    return client.chat.postMessage({
+      channel: event.channel,
+      thread_ts: event.ts,
+      text: getRandomOpeningLine()
+    });
+  }
+
+  // Handle simple greetings with opening lines first
   const simpleResponse = handleSimpleQuestions(text);
   if (simpleResponse) {
     return client.chat.postMessage({
@@ -337,7 +382,7 @@ app.event('app_mention', async ({ event, client, logger }) => {
     return client.chat.postMessage({
       channel: event.channel, 
       thread_ts: event.ts,
-      text: 'My AI brain is offline right now, but I can still handle basics. Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
+      text: 'My AI brain is taking a coffee break, but I can still handle the basics. Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
     });
   }
 
@@ -347,10 +392,20 @@ app.event('app_mention', async ({ event, client, logger }) => {
 
     // Handle missing information
     if (!routed.intent && routed.missing?.length) {
+      // Add some Donna flair to clarification requests
+      const clarificationPrefixes = [
+        "Let's skip the small talk — ",
+        "Before you ask, yes, I've already thought of that. But ",
+        "I read people for a living. You're no exception. ",
+        "",  // Sometimes just be direct
+        ""
+      ];
+      const prefix = clarificationPrefixes[Math.floor(Math.random() * clarificationPrefixes.length)];
+      
       return client.chat.postMessage({
         channel: event.channel, 
         thread_ts: event.ts,
-        text: routed.missing[0]
+        text: `${prefix}${routed.missing[0]}`
       });
     }
 
@@ -363,9 +418,29 @@ app.event('app_mention', async ({ event, client, logger }) => {
   }
 });
 
+// Donna's signature opening lines (rotate for variety)
+const donnaOpeningLines = [
+  "You're here for answers. Lucky for you, I already have them.",
+  "Let's skip the small talk — what's the real problem?",
+  "Before you ask, yes, I've already thought of that.",
+  "You clearly need my help. Good thing I'm Donna.",
+  "I could tell you you're in good hands… but you already know that.",
+  "Alright, let's cut to the chase — what are we solving today?",
+  "I read people for a living. You're no exception."
+];
+
+function getRandomOpeningLine() {
+  return donnaOpeningLines[Math.floor(Math.random() * donnaOpeningLines.length)];
+}
+
 // Simple question handler for basic queries
 function handleSimpleQuestions(text) {
   const lowerText = text.toLowerCase().trim();
+  
+  // Handle greetings with opening lines
+  if (lowerText.match(/^(hi|hello|hey|good morning|good afternoon|donna|what's up|how are you)$/)) {
+    return getRandomOpeningLine();
+  }
   
   // Only handle very specific time/date queries that don't need personality
   if (lowerText.match(/what time is it|current time|time right now/)) {
@@ -382,7 +457,7 @@ function handleSimpleQuestions(text) {
       month: 'long',
       day: 'numeric'
     });
-    return `It's ${timeString} ET on ${dateString}. Of course I know — I'm Donna.`;
+    return `It's ${timeString} ET on ${dateString}. I'm Donna. That's the whole explanation.`;
   }
   
   if (lowerText.match(/what.*date|today.*date|current date/)) {
@@ -393,7 +468,7 @@ function handleSimpleQuestions(text) {
       month: 'long', 
       day: 'numeric'
     });
-    return `Today is ${today}. You can thank me later for keeping you on track.`;
+    return `Today is ${today}. I already took care of knowing that for you.`;
   }
   
   return null; // Let LLM handle everything else for more natural conversation
@@ -411,22 +486,22 @@ setInterval(() => {
 (async () => {
   await app.start(PORT);
   console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
-  console.log('💼 Ready to handle: Scheduling, Time Tracking, Task Management & Whatever Else You Need');
+  console.log('💼 Managing: Scheduling, Time Tracking, Task Management & Your Entire Professional Life');
   
   // Test API connections on startup
   try {
     await togglService.getWorkspaces();
-    console.log('✅ Toggl connection verified - Time tracking ready');
+    console.log('✅ Toggl connection verified - Time tracking handled');
   } catch (error) {
     console.warn('⚠️ Toggl connection failed:', error.message);
   }
 
   try {
     await asanaService.getWorkspaces();
-    console.log('✅ Asana connection verified - Task management ready');
+    console.log('✅ Asana connection verified - Tasks under control');
   } catch (error) {
     console.warn('⚠️ Asana connection failed:', error.message);
   }
   
-  console.log('🎯 Donna is ready to make your life easier. Because that\'s what she does.');
+  console.log('🎯 I\'m Donna. That\'s the whole explanation. Let\'s get to work.');
 })();
