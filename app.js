@@ -1,4 +1,4 @@
-// app.js — Enhanced Donna with Thread Conversation Tracking
+// app.js — Enhanced Donna with Thread Conversation Tracking & Google Calendar
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 
@@ -8,8 +8,10 @@ const dataStore = require('./utils/dataStore');
 const ErrorHandler = require('./utils/errorHandler');
 const timeTrackingHandler = require('./handlers/timeTracking');
 const projectHandler = require('./handlers/projects');
+const calendarHandler = require('./handlers/calendar');
 const togglService = require('./services/toggl');
 const asanaService = require('./services/asana');
+const googleCalendarService = require('./services/googleCalendar');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment & Configuration
@@ -324,6 +326,30 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       }, 'Asana')(params);
       break;
       
+    case 'check_calendar':
+      await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+      
+    case 'create_meeting':
+      await ErrorHandler.wrapHandler(calendarHandler.handleCreateMeeting.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+      
+    case 'update_meeting':
+      await ErrorHandler.wrapHandler(calendarHandler.handleUpdateMeeting.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+      
+    case 'delete_meeting':
+      await ErrorHandler.wrapHandler(calendarHandler.handleDeleteMeeting.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+      
+    case 'next_meeting':
+      await ErrorHandler.wrapHandler(calendarHandler.handleNextMeeting.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+      
+    case 'calendar_rundown':
+      await ErrorHandler.wrapHandler(calendarHandler.handleCalendarRundown.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+      
     case 'general_chat':
       await client.chat.postMessage({
         channel,
@@ -338,7 +364,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: `${openingLine}\n\nI handle scheduling, time tracking, task management, and pretty much everything else.`
+        text: `${openingLine}\n\nI handle scheduling, time tracking, task management, calendar management, and pretty much everything else.`
       });
   }
 }
@@ -416,6 +442,14 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   if (text.match(/what projects|list projects|show.*projects|available projects/i)) {
     await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
       slots: {}, client, channel, thread_ts: responseThreadTs
+    });
+    return;
+  }
+
+  // Fast path for common calendar commands
+  if (text.match(/what meetings.*today|meetings today|calendar today/i)) {
+    await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')({
+      slots: { period: 'today' }, client, channel, thread_ts: responseThreadTs
     });
     return;
   }
@@ -575,7 +609,7 @@ setInterval(() => {
 (async () => {
   await app.start(PORT);
   console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
-  console.log('💼 Managing: Scheduling, Time Tracking, Task Management & Your Entire Professional Life');
+  console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   
   // Test API connections on startup
   try {
@@ -590,6 +624,13 @@ setInterval(() => {
     console.log('✅ Asana connection verified - Tasks under control');
   } catch (error) {
     console.warn('⚠️ Asana connection failed:', error.message);
+  }
+  
+  try {
+    await googleCalendarService.getCalendarInfo();
+    console.log('✅ Google Calendar connection verified - Meetings managed');
+  } catch (error) {
+    console.warn('⚠️ Google Calendar connection failed:', error.message);
   }
   
   console.log('🎯 I\'m Donna. That\'s the whole explanation. Let\'s get to work.');
