@@ -1,28 +1,30 @@
-// app.js — Donna (dual mode + agentic brain + SavvyCal)
-// Node 18+ (uses global fetch)
-
+// app.js — Enhanced Donna with Toggl time tracking integration
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
-const OpenAI = require('openai');
+
+// Enhanced architecture imports
+const IntentClassifier = require('./utils/intentClassifier');
+const dataStore = require('./utils/dataStore');
+const ErrorHandler = require('./utils/errorHandler');
+const timeTrackingHandler = require('./handlers/timeTracking');
+const togglService = require('./services/toggl');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Environment
+// Environment & Configuration
 // ─────────────────────────────────────────────────────────────────────────────
 const SOCKET_MODE = String(process.env.SOCKET_MODE).toLowerCase() === 'true';
 const PORT = process.env.PORT || 3000;
 
-const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;           // xoxb-...
+const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
-const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;           // xapp-... (Socket Mode only)
+const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 
 const SAVVYCAL_TOKEN = (process.env.SAVVYCAL_TOKEN || '').trim();
-const SAVVYCAL_SCOPE_SLUG = process.env.SAVVYCAL_SCOPE_SLUG;   // e.g., indievisual
+const SAVVYCAL_SCOPE_SLUG = process.env.SAVVYCAL_SCOPE_SLUG;
 
 const AGENT_MODE = String(process.env.AGENT_MODE).toLowerCase() === 'true';
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY || '';
-const ROUTER_MODEL = process.env.ROUTER_MODEL || 'gpt-4o-mini';
 
-// basic checks
+// Validation
 const must = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SAVVYCAL_TOKEN'];
 if (SOCKET_MODE) must.push('SLACK_APP_TOKEN');
 const missing = must.filter(k => !process.env[k] || !String(process.env[k]).trim());
@@ -30,10 +32,14 @@ if (missing.length) {
   console.error('❌ Missing env vars:', missing.join(', '));
   process.exit(1);
 }
-console.log(`[env] Mode=${SOCKET_MODE ? 'Socket' : 'HTTP'} • Scope=${SAVVYCAL_SCOPE_SLUG || '(none)'} • Agent=${AGENT_MODE ? 'on' : 'off'} • Port=${PORT}`);
+
+console.log(`[env] Mode=${SOCKET_MODE ? 'Socket' : 'HTTP'} • Agent=${AGENT_MODE ? 'on' : 'off'} • Port=${PORT}`);
+
+// Initialize enhanced intent classifier
+const intentClassifier = new IntentClassifier();
 
 // ─────────────────────────────────────────────────────────────────────────────
-/** SavvyCal helpers */
+// SavvyCal helpers (existing functionality)
 // ─────────────────────────────────────────────────────────────────────────────
 function buildUrlFrom(link, scope) {
   const slug = link.slug || '';
@@ -42,13 +48,11 @@ function buildUrlFrom(link, scope) {
   return scope ? `https://savvycal.com/${scope}/${slug}` : `https://savvycal.com/${slug}`;
 }
 
-/** create single-use link, then PATCH durations to [minutes] (no ?d= fallback) */
 async function createSingleUseLink(title, minutes) {
   const baseCreate = SAVVYCAL_SCOPE_SLUG
     ? `https://api.savvycal.com/v1/scopes/${SAVVYCAL_SCOPE_SLUG}/links`
     : `https://api.savvycal.com/v1/links`;
 
-  // create
   const createRes = await fetch(baseCreate, {
     method: 'POST',
     headers: {
@@ -58,13 +62,14 @@ async function createSingleUseLink(title, minutes) {
     },
     body: JSON.stringify({ name: title, type: 'single', description: `${minutes} min` })
   });
+  
   const createText = await createRes.text();
   if (!createRes.ok) throw new Error(`SavvyCal create failed ${createRes.status}: ${createText}`);
+  
   const created = JSON.parse(createText);
   const link = created.link || created;
   const url = buildUrlFrom(link, SAVVYCAL_SCOPE_SLUG);
 
-  // lock duration
   const patchRes = await fetch(`https://api.savvycal.com/v1/links/${link.id}`, {
     method: 'PATCH',
     headers: {
@@ -74,10 +79,12 @@ async function createSingleUseLink(title, minutes) {
     },
     body: JSON.stringify({ durations: [minutes], default_duration: minutes })
   });
+  
   if (!patchRes.ok) {
     const t = await patchRes.text();
     throw new Error(`SavvyCal PATCH durations failed ${patchRes.status}: ${t}`);
   }
+  
   return { id: link.id, url };
 }
 
@@ -90,62 +97,7 @@ async function toggleLink(linkId) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-/** Agentic “brain” (intent + slots) */
-// ─────────────────────────────────────────────────────────────────────────────
-const DONNA_SYSTEM_PROMPT = `
-You are Donna, a sharp, confident operations chief-of-staff in Slack (inspired by Donna Paulsen from *Suits*).
-Style: concise, warm, subtly witty. Ask at most ONE focused question if needed. Confirm before risky actions.
-Output STRICT JSON only (no backticks, no prose): {"intent": "...", "slots": {...}, "missing": []}
-Valid intents:
-- "schedule_oneoff"  -> slots: { "title": string, "minutes": 15|30|45|60 }
-- "disable_link"     -> slots: { "link_id": string }
-Rules:
-- If intent unclear, set intent "" and put ONE short question in "missing".
-- Keep "slots" minimal—only required fields.
-`;
-
-function initLLM() {
-  if (!AGENT_MODE) return null;
-  if (!OPENAI_API_KEY) {
-    console.warn('Agent mode requested but OPENAI_API_KEY is missing; agent disabled.');
-    return null;
-  }
-  return new OpenAI({ apiKey: OPENAI_API_KEY });
-}
-
-async function routeWithLLM({ llm, text, context = {} }) {
-  if (!llm) return { intent: '', slots: {}, missing: ['What do you need? e.g., schedule "Intro with ACME" 30'] };
-  const messages = [
-    { role: 'system', content: DONNA_SYSTEM_PROMPT },
-    { role: 'user', content: JSON.stringify({ text, context }) }
-  ];
-  const resp = await llm.chat.completions.create({
-    model: ROUTER_MODEL,
-    messages,
-    temperature: 0.2,
-    response_format: { type: 'json_object' }
-  });
-  const raw = resp.choices?.[0]?.message?.content || '{}';
-  try { return JSON.parse(raw); }
-  catch { return { intent: '', slots: {}, missing: ['Say that again—schedule, disable, or something else?'] }; }
-}
-
-const llm = initLLM();
-
-// ─────────────────────────────────────────────────────────────────────────────
-/** Tiny per-thread memory (swap for Redis/DB later) */
-// ─────────────────────────────────────────────────────────────────────────────
-const threadState = new Map();
-const keyForThread = (channel, ts) => `${channel}::${ts || 'root'}`;
-const loadThread = (channel, ts) => threadState.get(keyForThread(channel, ts)) || {};
-const saveThread = (channel, ts, data) => {
-  const k = keyForThread(channel, ts);
-  const curr = threadState.get(k) || {};
-  threadState.set(k, { ...curr, ...data });
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-/** Bolt app: dual mode init */
+// Bolt app initialization (dual mode)
 // ─────────────────────────────────────────────────────────────────────────────
 let app;
 if (SOCKET_MODE) {
@@ -157,14 +109,83 @@ if (SOCKET_MODE) {
   });
 } else {
   const receiver = new ExpressReceiver({ signingSecret: SLACK_SIGNING_SECRET });
-  // request logger + health
   receiver.router.use((req, _res, next) => { console.log(`[http] ${req.method} ${req.url}`); next(); });
   receiver.router.get('/', (_req, res) => res.send('OK'));
   app = new App({ token: SLACK_BOT_TOKEN, receiver });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-/** PROD: Slash command /schedule — Usage: /schedule "Title" 30 */
+// Enhanced handlers for different intent types
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Scheduling handlers (existing)
+const handleScheduling = ErrorHandler.wrapHandler(async ({ slots, client, channel, thread_ts }) => {
+  const { title, minutes } = slots;
+  if (!title || !minutes) {
+    throw ErrorHandler.ValidationError(
+      'I need a title and duration.',
+      ['schedule "Meeting with John" 30', 'schedule "Project sync" 45']
+    );
+  }
+
+  await client.chat.postMessage({ channel, thread_ts, text: 'On it.' });
+  
+  const { url, id } = await createSingleUseLink(title, minutes);
+  dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
+  
+  await client.chat.postMessage({ 
+    channel, 
+    thread_ts, 
+    text: `Done. ${url}` 
+  });
+}, 'SavvyCal');
+
+const handleLinkDisabling = ErrorHandler.wrapHandler(async ({ slots, client, channel, thread_ts }) => {
+  const { link_id } = slots;
+  if (!link_id) {
+    throw ErrorHandler.ValidationError('Which link should I disable?');
+  }
+
+  await toggleLink(link_id);
+  await client.chat.postMessage({ 
+    channel, 
+    thread_ts, 
+    text: '✅ Disabled.' 
+  });
+}, 'SavvyCal');
+
+// Intent routing
+async function handleIntent(intent, slots, client, channel, thread_ts) {
+  const params = { slots, client, channel, thread_ts };
+  
+  switch (intent) {
+    case 'schedule_oneoff':
+      await handleScheduling(params);
+      break;
+      
+    case 'disable_link':
+      await handleLinkDisabling(params);
+      break;
+      
+    case 'log_time':
+      await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeLog.bind(timeTrackingHandler), 'Toggl')(params);
+      break;
+      
+    case 'query_time':
+      await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeQuery.bind(timeTrackingHandler), 'Toggl')(params);
+      break;
+      
+    default:
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: 'I can help with scheduling, time tracking, and more. What do you need?'
+      });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Slash command (existing functionality)
 // ─────────────────────────────────────────────────────────────────────────────
 app.command('/schedule', async ({ command, ack, respond }) => {
   await ack();
@@ -177,8 +198,7 @@ app.command('/schedule', async ({ command, ack, respond }) => {
 
   try {
     const { url, id } = await createSingleUseLink(title, minutes);
-    // store last link in this DM/thread context if needed later
-    saveThread(command.channel_id, command.thread_ts || command.trigger_id, { last_link_id: id });
+    dataStore.setThreadData(command.channel_id, command.thread_ts || command.trigger_id, { last_link_id: id });
 
     await respond({
       text: url,
@@ -193,11 +213,10 @@ app.command('/schedule', async ({ command, ack, respond }) => {
       ]
     });
   } catch (e) {
-    await respond(`Couldn’t create it: ${e.message}`);
+    await respond(`Couldn't create it: ${e.message}`);
   }
 });
 
-// action to disable link (works for both slash/mention flows)
 app.action('sc_disable', async ({ ack, body, client }) => {
   await ack();
   const linkId = body.actions?.[0]?.value;
@@ -212,21 +231,20 @@ app.action('sc_disable', async ({ ack, body, client }) => {
     await client.chat.postMessage({
       channel: body.channel?.id || body.user?.id,
       thread_ts: body.message?.ts,
-      text: `Couldn’t disable: ${e.message}`
+      text: `Couldn't disable: ${e.message}`
     });
   }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-/** DEV (and optional in prod): @mention handler — agentic with fast-path */
-// Usage: @Donna schedule "Title" 30
+// Enhanced mention handler with expanded functionality
 // ─────────────────────────────────────────────────────────────────────────────
 app.event('app_mention', async ({ event, client, logger }) => {
   const raw = event.text || '';
   const text = raw.replace(/<@[^>]+>\s*/g, '').trim();
   logger.info(`mention: "${text}" in ${event.channel}`);
 
-  // Fast path (keeps your deterministic behavior)
+  // Fast path for exact scheduling commands (backward compatibility)
   const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
   if (strict) {
     const [, title, minutesStr] = strict;
@@ -235,77 +253,64 @@ app.event('app_mention', async ({ event, client, logger }) => {
     await client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: 'On it.' });
     try {
       const { url, id } = await createSingleUseLink(title, minutes);
-      saveThread(event.channel, event.ts, { last_link_id: id });
+      dataStore.setThreadData(event.channel, event.ts, { last_link_id: id });
       return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Done. ${url}` });
     } catch (e) {
       logger.error(e);
-      return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Couldn’t create it: ${e.message}` });
+      return ErrorHandler.handleApiError(e, client, event.channel, event.ts, 'SavvyCal');
     }
   }
 
-  // Agentic path
-  if (!AGENT_MODE || !llm) {
+  // Enhanced agentic path
+  if (!AGENT_MODE || !intentClassifier.llm) {
     return client.chat.postMessage({
-      channel: event.channel, thread_ts: event.ts,
-      text: 'Try: `schedule "Meeting name" 30`'
+      channel: event.channel, 
+      thread_ts: event.ts,
+      text: 'Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
     });
   }
 
-  const context = loadThread(event.channel, event.ts);
-  const routed = await routeWithLLM({ llm, text, context });
+  try {
+    const context = dataStore.getThreadData(event.channel, event.ts);
+    const routed = await intentClassifier.classify({ text, context });
 
-  if (!routed.intent && routed.missing?.length) {
-    return client.chat.postMessage({
-      channel: event.channel, thread_ts: event.ts,
-      text: routed.missing[0]
-    });
-  }
-
-  if (routed.intent === 'schedule_oneoff') {
-    const { title, minutes } = routed.slots || {};
-    if (!title || !minutes) {
+    // Handle missing information
+    if (!routed.intent && routed.missing?.length) {
       return client.chat.postMessage({
-        channel: event.channel, thread_ts: event.ts,
-        text: 'I need a title and duration. Example: schedule "Intro with ACME" 30'
+        channel: event.channel, 
+        thread_ts: event.ts,
+        text: routed.missing[0]
       });
     }
-    await client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: 'On it.' });
-    try {
-      const { url, id } = await createSingleUseLink(title, minutes);
-      saveThread(event.channel, event.ts, { last_link_id: id });
-      return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Done. ${url}` });
-    } catch (e) {
-      logger.error(e);
-      return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Couldn’t create it: ${e.message}` });
-    }
-  }
 
-  if (routed.intent === 'disable_link') {
-    const link_id = routed.slots?.link_id || context.last_link_id;
-    if (!link_id) {
-      return client.chat.postMessage({
-        channel: event.channel, thread_ts: event.ts,
-        text: 'Which link should I disable? (Say “last link” if it’s the one we just made.)'
-      });
-    }
-    try {
-      await toggleLink(link_id);
-      return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: '✅ Disabled.' });
-    } catch (e) {
-      logger.error(e);
-      return client.chat.postMessage({ channel: event.channel, thread_ts: event.ts, text: `Couldn’t disable it: ${e.message}` });
-    }
+    // Route to appropriate handler
+    await handleIntent(routed.intent, routed.slots, client, event.channel, event.ts);
+    
+  } catch (error) {
+    logger.error('Enhanced mention handler error:', error);
+    await ErrorHandler.handleApiError(error, client, event.channel, event.ts);
   }
-
-  // Fallback
-  return client.chat.postMessage({
-    channel: event.channel, thread_ts: event.ts,
-    text: 'I can schedule or disable a link. What do you need?'
-  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Cleanup and startup
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Periodic cleanup of cached data
+setInterval(() => {
+  dataStore.cleanupCache();
+}, 3600000); // Every hour
+
 (async () => {
   await app.start(PORT);
-  console.log(`⚡ Donna running in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
+  console.log(`⚡ Enhanced Donna running in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
+  console.log('📊 New capabilities: Time tracking with Toggl');
+  
+  // Test Toggl connection on startup
+  try {
+    await togglService.getWorkspaces();
+    console.log('✅ Toggl connection verified');
+  } catch (error) {
+    console.warn('⚠️ Toggl connection failed:', error.message);
+  }
 })();
