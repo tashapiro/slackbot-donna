@@ -142,15 +142,22 @@ function isThreadActive(channel, thread_ts) {
   return isActive && isRecent;
 }
 
+function isDirectMessage(channel) {
+  // Direct message channels start with 'D' in Slack
+  return channel.startsWith('D');
+}
+
 function updateThreadActivity(channel, thread_ts) {
-  if (isThreadActive(channel, thread_ts)) {
+  if (thread_ts && isThreadActive(channel, thread_ts)) {
     dataStore.setThreadData(channel, thread_ts, { lastActivity: Date.now() });
   }
 }
 
 function deactivateThread(channel, thread_ts) {
-  dataStore.setThreadData(channel, thread_ts, { donnaActive: false });
-  console.log(`Donna left thread: ${channel}::${thread_ts}`);
+  if (thread_ts) {
+    dataStore.setThreadData(channel, thread_ts, { donnaActive: false });
+    console.log(`Donna left thread: ${channel}::${thread_ts}`);
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -344,23 +351,35 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
 async function processDonnaMessage(text, event, client, logger, isMention = true) {
   const { channel, user, ts, thread_ts } = event;
   
-  // If this is a mention, mark thread as active
-  if (isMention && thread_ts) {
-    markThreadAsActive(channel, thread_ts, user);
+  // Determine where to respond based on context
+  let responseThreadTs = thread_ts;
+  
+  // For channel mentions (not DMs), always respond in a thread
+  if (isMention && !isDirectMessage(channel) && !thread_ts) {
+    responseThreadTs = ts; // Create a thread under the original message
+    markThreadAsActive(channel, responseThreadTs, user);
+    console.log(`Creating new thread under message ${ts} in channel ${channel}`);
   }
   
-  // Update activity for active threads
-  if (thread_ts) {
-    updateThreadActivity(channel, thread_ts);
+  // For existing threads, mark as active if it's a mention
+  if (isMention && responseThreadTs && responseThreadTs !== ts) {
+    markThreadAsActive(channel, responseThreadTs, user);
+  }
+  
+  // Update activity for active threads or DMs
+  if (responseThreadTs) {
+    updateThreadActivity(channel, responseThreadTs);
   }
 
-  logger.info(`${isMention ? 'mention' : 'message'}: "${text}" in ${channel}${thread_ts ? ` (thread: ${thread_ts})` : ''}`);
+  const contextInfo = isDirectMessage(channel) ? 'DM' : 
+                     responseThreadTs ? `thread: ${responseThreadTs}` : 'channel';
+  logger.info(`${isMention ? 'mention' : 'message'}: "${text}" in ${channel} (${contextInfo})`);
 
   // Handle empty mentions or just "Donna" with opening lines
   if (!text || text.length === 0) {
     return client.chat.postMessage({
       channel,
-      thread_ts,
+      thread_ts: responseThreadTs,
       text: getRandomOpeningLine()
     });
   }
@@ -370,14 +389,14 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   if (simpleResponse) {
     return client.chat.postMessage({
       channel,
-      thread_ts,
+      thread_ts: responseThreadTs,
       text: simpleResponse
     });
   }
 
-  // Check for exit commands in threads
-  if (thread_ts && text.match(/^(bye|goodbye|thanks|thank you|done|exit|leave)$/i)) {
-    deactivateThread(channel, thread_ts);
+  // Check for exit commands in threads (not DMs)
+  if (responseThreadTs && !isDirectMessage(channel) && text.match(/^(bye|goodbye|thanks|thank you|done|exit|leave)$/i)) {
+    deactivateThread(channel, responseThreadTs);
     const exitResponses = [
       "I'm always here when you need me.",
       "You know where to find me.",
@@ -388,7 +407,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     const exitResponse = exitResponses[Math.floor(Math.random() * exitResponses.length)];
     return client.chat.postMessage({
       channel,
-      thread_ts,
+      thread_ts: responseThreadTs,
       text: exitResponse
     });
   }
@@ -396,7 +415,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   // Fast path for common commands
   if (text.match(/what projects|list projects|show.*projects|available projects/i)) {
     await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
-      slots: {}, client, channel, thread_ts
+      slots: {}, client, channel, thread_ts: responseThreadTs
     });
     return;
   }
@@ -407,14 +426,14 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     const [, title, minutesStr] = strict;
     const minutes = parseInt(minutesStr, 10);
 
-    await client.chat.postMessage({ channel, thread_ts, text: 'Already on it. This is what I do.' });
+    await client.chat.postMessage({ channel, thread_ts: responseThreadTs, text: 'Already on it. This is what I do.' });
     try {
       const { url, id } = await createSingleUseLink(title, minutes);
-      dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
-      return client.chat.postMessage({ channel, thread_ts, text: `Done. ${url}\n\nI already took care of it. You're welcome.` });
+      dataStore.setThreadData(channel, responseThreadTs, { last_link_id: id });
+      return client.chat.postMessage({ channel, thread_ts: responseThreadTs, text: `Done. ${url}\n\nI already took care of it. You're welcome.` });
     } catch (e) {
       logger.error(e);
-      return ErrorHandler.handleApiError(e, client, channel, thread_ts, 'SavvyCal');
+      return ErrorHandler.handleApiError(e, client, channel, responseThreadTs, 'SavvyCal');
     }
   }
 
@@ -422,13 +441,13 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   if (!AGENT_MODE || !intentClassifier.llm) {
     return client.chat.postMessage({
       channel, 
-      thread_ts,
+      thread_ts: responseThreadTs,
       text: 'My AI brain is taking a coffee break, but I can still handle the basics. Try: `schedule "Meeting name" 30` or `log time for ProjectName 2 hours`'
     });
   }
 
   try {
-    const context = dataStore.getThreadData(channel, thread_ts);
+    const context = dataStore.getThreadData(channel, responseThreadTs);
     const routed = await intentClassifier.classify({ text, context });
 
     // Handle missing information
@@ -445,17 +464,17 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
       
       return client.chat.postMessage({
         channel, 
-        thread_ts,
+        thread_ts: responseThreadTs,
         text: `${prefix}${routed.missing[0]}`
       });
     }
 
     // Route to appropriate handler
-    await handleIntent(routed.intent, routed.slots, client, channel, thread_ts, routed.response);
+    await handleIntent(routed.intent, routed.slots, client, channel, responseThreadTs, routed.response);
     
   } catch (error) {
     logger.error('Enhanced message handler error:', error);
-    await ErrorHandler.handleApiError(error, client, channel, thread_ts);
+    await ErrorHandler.handleApiError(error, client, channel, responseThreadTs);
   }
 }
 
@@ -522,21 +541,26 @@ app.event('app_mention', async ({ event, client, logger }) => {
   await processDonnaMessage(text, event, client, logger, true);
 });
 
-// Handle regular messages in active threads
+// Handle regular messages 
 app.event('message', async ({ event, client, logger }) => {
-  // Skip if it's a bot message, has no thread, or thread isn't active
-  if (event.bot_id || !event.thread_ts || !isThreadActive(event.channel, event.thread_ts)) {
+  // Skip bot messages
+  if (event.bot_id) {
     return;
   }
   
-  // Skip if it's a mention (already handled by app_mention)
+  // Skip messages that are mentions (already handled by app_mention)
   if (event.text && event.text.includes('<@')) {
     return;
   }
 
-  // Process as regular thread message
-  const text = event.text || '';
-  await processDonnaMessage(text, event, client, logger, false);
+  const isDM = isDirectMessage(event.channel);
+  const isActiveThread = event.thread_ts && isThreadActive(event.channel, event.thread_ts);
+  
+  // Respond if it's a DM or an active thread
+  if (isDM || isActiveThread) {
+    const text = event.text || '';
+    await processDonnaMessage(text, event, client, logger, false);
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
