@@ -45,6 +45,7 @@ CALENDAR:
 PROJECTS:
 - "list_tasks" -> slots: { "project": string?, "assignee": string?, "due_date": string?, "status": string? }
 - "list_projects" -> slots: {} (for queries like "what projects are available", "show me projects", "list all projects")
+- "debug_tasks" -> slots: { "project": string? } (for queries like "debug tasks in ProjectName", "show me raw task data")
 - "update_task" -> slots: { "task_id": string, "field": string, "value": string }
 - "create_task" -> slots: { "name": string, "project": string?, "due_date": string?, "notes": string? }
 - "complete_task" -> slots: { "task_id": string }

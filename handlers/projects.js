@@ -48,13 +48,13 @@ class ProjectHandler {
         
         // Try different approach - get all tasks then filter by project
         try {
-          // First try: get tasks for specific project
+          // First try: get tasks for specific project (incomplete only)
           tasks = await asanaService.getTasks({ 
             project: foundProject.gid,
-            completed: false
+            includeCompleted: false  // Only get incomplete tasks
           });
           
-          console.log(`Found ${tasks.length} tasks in project ${foundProject.name}`);
+          console.log(`Found ${tasks.length} incomplete tasks in project ${foundProject.name}`);
           
           // Additional client-side filtering to remove any problematic tasks
           tasks = tasks.filter(task => {
@@ -71,13 +71,13 @@ class ProjectHandler {
             return isValid;
           });
           
-          console.log(`After additional filtering: ${tasks.length} valid tasks`);
+          console.log(`After additional filtering: ${tasks.length} valid incomplete tasks`);
           
         } catch (projectError) {
           console.log('Project-specific query failed, trying alternative approach:', projectError.message);
           
           // Fallback: get all user tasks and filter client-side
-          const allTasks = await asanaService.getTasks({ completed: false, limit: 100 });
+          const allTasks = await asanaService.getTasks({ includeCompleted: false, limit: 100 });
           tasks = allTasks.filter(task => 
             task.projects && 
             task.projects.some(p => p.gid === foundProject.gid || p.name === foundProject.name) &&
@@ -106,22 +106,22 @@ class ProjectHandler {
       let message = title + '\n\n';
       
       if (grouped.overdue.length > 0) {
-        message += '*🔴 Overdue:*\n';
+        message += '*Overdue:*\n';
         message += grouped.overdue.map(t => asanaService.formatTask(t)).join('\n') + '\n\n';
       }
       
       if (grouped.today.length > 0) {
-        message += '*🟡 Due Today:*\n';
+        message += '*Due Today:*\n';
         message += grouped.today.map(t => asanaService.formatTask(t)).join('\n') + '\n\n';
       }
       
       if (grouped.thisWeek.length > 0) {
-        message += '*📅 This Week:*\n';
+        message += '*This Week:*\n';
         message += grouped.thisWeek.map(t => asanaService.formatTask(t)).join('\n') + '\n\n';
       }
       
       if (grouped.later.length > 0) {
-        message += '*📋 Later:*\n';
+        message += '*Later:*\n';
         message += grouped.later.slice(0, 5).map(t => asanaService.formatTask(t)).join('\n');
         if (grouped.later.length > 5) {
           message += `\n_...and ${grouped.later.length - 5} more_`;
@@ -130,7 +130,7 @@ class ProjectHandler {
       }
       
       if (grouped.noDueDate.length > 0) {
-        message += '*📝 No Due Date:*\n';
+        message += '*No Due Date:*\n';
         message += grouped.noDueDate.slice(0, 3).map(t => asanaService.formatTask(t)).join('\n');
         if (grouped.noDueDate.length > 3) {
           message += `\n_...and ${grouped.noDueDate.length - 3} more_`;
@@ -307,10 +307,10 @@ class ProjectHandler {
         asanaService.getTasksDueThisWeek()
       ]);
       
-      let rundown = '*📋 Daily Task Rundown*\n\n';
+      let rundown = '*Daily Task Rundown*\n\n';
       
       if (overdueTasks.length > 0) {
-        rundown += '*🔴 Overdue Tasks:*\n';
+        rundown += '*Overdue Tasks:*\n';
         rundown += overdueTasks.slice(0, 5).map(t => asanaService.formatTask(t, false)).join('\n');
         if (overdueTasks.length > 5) {
           rundown += `\n_...and ${overdueTasks.length - 5} more overdue tasks_`;
@@ -319,7 +319,7 @@ class ProjectHandler {
       }
       
       if (todayTasks.length > 0) {
-        rundown += '*🟡 Due Today:*\n';
+        rundown += '*Due Today:*\n';
         rundown += todayTasks.map(t => asanaService.formatTask(t, false)).join('\n') + '\n\n';
       }
       
@@ -330,7 +330,7 @@ class ProjectHandler {
       });
       
       if (upcomingTasks.length > 0) {
-        rundown += '*📅 Coming Up This Week:*\n';
+        rundown += '*Coming Up This Week:*\n';
         rundown += upcomingTasks.slice(0, 5).map(t => asanaService.formatTask(t, false)).join('\n');
         if (upcomingTasks.length > 5) {
           rundown += `\n_...and ${upcomingTasks.length - 5} more this week_`;

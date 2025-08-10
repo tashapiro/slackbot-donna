@@ -161,7 +161,7 @@ class AsanaService {
     due_before = null,
     due_after = null,
     limit = 50,
-    completed = null
+    includeCompleted = false  // New parameter to control completed task inclusion
   } = {}) {
     if (!this.workspaceId) await this.getWorkspaces();
 
@@ -177,14 +177,19 @@ class AsanaService {
       console.log(`Adding project filter: ${project}`);
       params.append('project', project);
     }
-    if (completed_since) params.append('completed_since', completed_since);
+    
+    // Correct way to filter by completion status in Asana API
+    if (!includeCompleted) {
+      console.log('Adding completed_since=now to get only incomplete tasks');
+      params.append('completed_since', 'now');
+    } else if (completed_since) {
+      console.log(`Adding completed_since filter: ${completed_since}`);
+      params.append('completed_since', completed_since);
+    }
+    
     if (due_on) params.append('due_on', due_on);
     if (due_before) params.append('due_before', due_before);
     if (due_after) params.append('due_after', due_after);
-    if (completed !== null) {
-      console.log(`Adding completed filter: ${completed}`);
-      params.append('completed', completed.toString());
-    }
 
     const url = `${this.baseUrl}/tasks?${params}`;
     console.log(`Asana API call: ${url}`);
@@ -224,9 +229,13 @@ class AsanaService {
       
       console.log(`After filtering: ${filteredTasks.length} tasks remaining`);
       
+      // Log completion status for debugging
+      const completedCount = filteredTasks.filter(t => t.completed).length;
+      console.log(`Completion breakdown: ${completedCount} completed, ${filteredTasks.length - completedCount} incomplete`);
+      
       // Log the first few task names for debugging
       if (filteredTasks.length > 0) {
-        console.log(`Sample tasks: ${filteredTasks.slice(0, 3).map(t => t.name).join(', ')}`);
+        console.log(`Sample tasks: ${filteredTasks.slice(0, 3).map(t => `${t.name} (${t.completed ? 'completed' : 'incomplete'})`).join(', ')}`);
       }
       
       return filteredTasks;
@@ -239,7 +248,7 @@ class AsanaService {
   // Get tasks due today
   async getTasksDueToday() {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    return this.getTasks({ due_on: today, completed: false });
+    return this.getTasks({ due_on: today, includeCompleted: false });
   }
 
   // Get tasks due this week
@@ -250,7 +259,7 @@ class AsanaService {
     return this.getTasks({
       due_after: today.toISOString().split('T')[0],
       due_before: nextWeek.toISOString().split('T')[0],
-      completed: false
+      includeCompleted: false
     });
   }
 
@@ -261,11 +270,28 @@ class AsanaService {
     
     return this.getTasks({
       due_before: yesterday.toISOString().split('T')[0],
-      completed: false
+      includeCompleted: false
     });
   }
 
-  // Update a task
+  // Get recently completed tasks (completed in the last N days)
+  async getRecentlyCompletedTasks(days = 7) {
+    const since = new Date();
+    since.setDate(since.getDate() - days);
+    
+    return this.getTasks({
+      completed_since: since.toISOString(),
+      includeCompleted: true
+    });
+  }
+
+  // Get all tasks (completed and incomplete) - useful for debugging
+  async getAllTasks(options = {}) {
+    return this.getTasks({
+      ...options,
+      includeCompleted: true
+    });
+  }
   async updateTask(taskId, updates) {
     try {
       const response = await fetch(`${this.baseUrl}/tasks/${taskId}`, {
@@ -359,9 +385,9 @@ class AsanaService {
       const isPast = dueDate < today;
       
       if (isToday) {
-        formatted += ' 🟡 (due today)';
+        formatted += ' (due today)';
       } else if (isPast) {
-        formatted += ' 🔴 (overdue)';
+        formatted += ' (overdue)';
       } else {
         formatted += ` (due ${dueDate.toLocaleDateString()})`;
       }
