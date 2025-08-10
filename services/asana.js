@@ -112,21 +112,43 @@ class AsanaService {
     const projects = await this.getProjects();
     const name = projectName.toLowerCase().trim();
     
+    console.log(`Searching for project: "${projectName}"`);
+    console.log(`Available projects: ${projects.map(p => p.name).join(', ')}`);
+    
     // Exact match first
     let project = projects.find(p => p.name.toLowerCase() === name);
-    if (project) return project;
-    
-    // Partial match
-    project = projects.find(p => p.name.toLowerCase().includes(name));
-    if (project) return project;
-    
-    // Fuzzy match - check if any project name contains any word from the search
-    const searchWords = name.split(' ').filter(w => w.length > 2);
-    for (const word of searchWords) {
-      project = projects.find(p => p.name.toLowerCase().includes(word));
-      if (project) return project;
+    if (project) {
+      console.log(`Found exact match: ${project.name}`);
+      return project;
     }
     
+    // Partial match - project name contains search term
+    project = projects.find(p => p.name.toLowerCase().includes(name));
+    if (project) {
+      console.log(`Found partial match: ${project.name}`);
+      return project;
+    }
+    
+    // Reverse partial match - search term contains project name
+    project = projects.find(p => name.includes(p.name.toLowerCase()));
+    if (project) {
+      console.log(`Found reverse match: ${project.name}`);
+      return project;
+    }
+    
+    // Fuzzy match - check if any project name contains any word from the search
+    const searchWords = name.split(/[\s\-_]+/).filter(w => w.length > 2); // Split on spaces, hyphens, underscores
+    console.log(`Search words: ${searchWords.join(', ')}`);
+    
+    for (const word of searchWords) {
+      project = projects.find(p => p.name.toLowerCase().includes(word));
+      if (project) {
+        console.log(`Found fuzzy match with word "${word}": ${project.name}`);
+        return project;
+      }
+    }
+    
+    console.log(`No project found for: "${projectName}"`);
     return null;
   }
 
@@ -138,7 +160,8 @@ class AsanaService {
     due_on = null,
     due_before = null,
     due_after = null,
-    limit = 50
+    limit = 50,
+    completed = null
   } = {}) {
     if (!this.workspaceId) await this.getWorkspaces();
 
@@ -154,6 +177,7 @@ class AsanaService {
     if (due_on) params.append('due_on', due_on);
     if (due_before) params.append('due_before', due_before);
     if (due_after) params.append('due_after', due_after);
+    if (completed !== null) params.append('completed', completed.toString());
 
     try {
       const response = await fetch(
@@ -162,7 +186,8 @@ class AsanaService {
       );
 
       if (!response.ok) {
-        throw new Error(`Asana API error: ${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`Asana API error: ${response.status} ${response.statusText} - ${errorText}`);
       }
 
       const result = await response.json();
@@ -176,7 +201,7 @@ class AsanaService {
   // Get tasks due today
   async getTasksDueToday() {
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    return this.getTasks({ due_on: today, completed_since: 'now' });
+    return this.getTasks({ due_on: today, completed: false });
   }
 
   // Get tasks due this week
@@ -187,7 +212,7 @@ class AsanaService {
     return this.getTasks({
       due_after: today.toISOString().split('T')[0],
       due_before: nextWeek.toISOString().split('T')[0],
-      completed_since: 'now'
+      completed: false
     });
   }
 
@@ -198,7 +223,7 @@ class AsanaService {
     
     return this.getTasks({
       due_before: yesterday.toISOString().split('T')[0],
-      completed_since: 'now'
+      completed: false
     });
   }
 

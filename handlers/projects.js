@@ -46,7 +46,7 @@ class ProjectHandler {
         
         tasks = await asanaService.getTasks({ 
           project: foundProject.gid,
-          completed_since: 'now' // Only incomplete tasks
+          completed: false // Get only incomplete tasks
         });
         title = `*Tasks in ${foundProject.name}:*`;
       } else {
@@ -107,11 +107,21 @@ class ProjectHandler {
       
     } catch (error) {
       console.error('List tasks error:', error);
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: `Sorry, I had trouble fetching your tasks: ${error.message}`
-      });
+      
+      // More detailed error handling
+      if (error.message.includes('400')) {
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: `I had trouble with that request. This might be an issue with the project name or API parameters. Try:\n• Using the exact project name\n• Asking for "all my tasks" instead\n• Or try: @Donna what projects are available?`
+        });
+      } else {
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: `Sorry, I had trouble fetching your tasks: ${error.message}`
+        });
+      }
     }
   }
 
@@ -304,7 +314,38 @@ class ProjectHandler {
     }
   }
 
-  // Helper: Get projects as Slack blocks for easy selection
+  // Handle listing available projects
+  async handleListProjects({ client, channel, thread_ts }) {
+    try {
+      const projects = await asanaService.getProjects();
+      
+      if (projects.length === 0) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'No projects found in your Asana workspace.'
+        });
+      }
+      
+      const projectList = projects
+        .map(p => `• *${p.name}*${p.owner ? ` (${p.owner.name})` : ''}`)
+        .join('\n');
+        
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `*Available Asana projects:*\n\n${projectList}`
+      });
+      
+    } catch (error) {
+      console.error('List projects error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I had trouble fetching your projects: ${error.message}`
+      });
+    }
+  }
   async getProjectsBlock() {
     try {
       const projects = await asanaService.getProjects();
