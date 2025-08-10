@@ -155,7 +155,7 @@ const handleLinkDisabling = ErrorHandler.wrapHandler(async ({ slots, client, cha
 }, 'SavvyCal');
 
 // Intent routing
-async function handleIntent(intent, slots, client, channel, thread_ts) {
+async function handleIntent(intent, slots, client, channel, thread_ts, response = '') {
   const params = { slots, client, channel, thread_ts };
   
   switch (intent) {
@@ -173,6 +173,14 @@ async function handleIntent(intent, slots, client, channel, thread_ts) {
       
     case 'query_time':
       await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeQuery.bind(timeTrackingHandler), 'Toggl')(params);
+      break;
+      
+    case 'general_chat':
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: response || "I'm here to help with whatever you need!"
+      });
       break;
       
     default:
@@ -294,7 +302,7 @@ app.event('app_mention', async ({ event, client, logger }) => {
     }
 
     // Route to appropriate handler
-    await handleIntent(routed.intent, routed.slots, client, event.channel, event.ts);
+    await handleIntent(routed.intent, routed.slots, client, event.channel, event.ts, routed.response);
     
   } catch (error) {
     logger.error('Enhanced mention handler error:', error);
@@ -306,7 +314,7 @@ app.event('app_mention', async ({ event, client, logger }) => {
 function handleSimpleQuestions(text) {
   const lowerText = text.toLowerCase().trim();
   
-  // Time and date questions
+  // Only handle very specific time/date queries that don't need personality
   if (lowerText.match(/what time is it|current time|time right now/)) {
     const now = new Date();
     const timeString = now.toLocaleTimeString('en-US', { 
@@ -335,45 +343,7 @@ function handleSimpleQuestions(text) {
     return `Today is ${today}.`;
   }
   
-  // Greeting responses
-  if (lowerText.match(/^(hi|hello|hey|good morning|good afternoon)$/)) {
-    const greetings = [
-      "Hey there! What can I help you with?",
-      "Hello! Ready to tackle some work?", 
-      "Hi! What's on the agenda today?",
-      "Hey! How can I assist you?"
-    ];
-    return greetings[Math.floor(Math.random() * greetings.length)];
-  }
-  
-  // Status questions
-  if (lowerText.match(/how are you|how's it going|what's up/)) {
-    const responses = [
-      "I'm doing great! Ready to help with scheduling, time tracking, and more.",
-      "All systems running smoothly! What do you need?",
-      "I'm here and ready to help. What's the plan?",
-      "Doing well! Got any meetings to schedule or time to log?"
-    ];
-    return responses[Math.floor(Math.random() * responses.length)];
-  }
-  
-  // Help requests
-  if (lowerText.match(/help|what can you do|capabilities|commands/)) {
-    return `I can help you with:
-    
-*⏰ Scheduling:* "schedule 'Meeting name' 30"
-*📊 Time Tracking:* "how many hours did I log today?" or "log 2 hours to ProjectName"
-*💬 General Chat:* Ask me the time, date, or just say hi!
-
-What would you like to do?`;
-  }
-  
-  // Thanks responses
-  if (lowerText.match(/^(thanks|thank you|thx)$/)) {
-    return "You're welcome! Let me know if you need anything else.";
-  }
-  
-  return null; // No simple response found, continue to intent classification
+  return null; // Let LLM handle everything else for more natural conversation
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
