@@ -1,4 +1,4 @@
-// app.js — Enhanced Donna with Thread Conversation Tracking & Google Calendar
+// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 
@@ -6,12 +6,18 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const IntentClassifier = require('./utils/intentClassifier');
 const dataStore = require('./utils/dataStore');
 const ErrorHandler = require('./utils/errorHandler');
-const timeTrackingHandler = require('./handlers/timeTracking');
-const projectHandler = require('./handlers/projects');
-const calendarHandler = require('./handlers/calendar');
+
+// Service imports
+const savvyCalService = require('./services/savvycal');
 const togglService = require('./services/toggl');
 const asanaService = require('./services/asana');
 const googleCalendarService = require('./services/googleCalendar');
+
+// Handler imports
+const schedulingHandler = require('./handlers/scheduling');
+const timeTrackingHandler = require('./handlers/timeTracking');
+const projectHandler = require('./handlers/projects');
+const calendarHandler = require('./handlers/calendar');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment & Configuration
@@ -22,9 +28,7 @@ const PORT = process.env.PORT || 3000;
 const SLACK_BOT_TOKEN = process.env.SLACK_BOT_TOKEN;
 const SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
 const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
-
 const SAVVYCAL_TOKEN = (process.env.SAVVYCAL_TOKEN || '').trim();
-const SAVVYCAL_SCOPE_SLUG = process.env.SAVVYCAL_SCOPE_SLUG;
 
 const AGENT_MODE = String(process.env.AGENT_MODE).toLowerCase() === 'true';
 
@@ -41,64 +45,6 @@ console.log(`[env] Mode=${SOCKET_MODE ? 'Socket' : 'HTTP'} • Agent=${AGENT_MOD
 
 // Initialize enhanced intent classifier
 const intentClassifier = new IntentClassifier();
-
-// ─────────────────────────────────────────────────────────────────────────────
-// SavvyCal helpers (existing functionality)
-// ─────────────────────────────────────────────────────────────────────────────
-function buildUrlFrom(link, scope) {
-  const slug = link.slug || '';
-  if (link.url) return link.url;
-  if (slug.includes('/')) return `https://savvycal.com/${slug}`;
-  return scope ? `https://savvycal.com/${scope}/${slug}` : `https://savvycal.com/${slug}`;
-}
-
-async function createSingleUseLink(title, minutes) {
-  const baseCreate = SAVVYCAL_SCOPE_SLUG
-    ? `https://api.savvycal.com/v1/scopes/${SAVVYCAL_SCOPE_SLUG}/links`
-    : `https://api.savvycal.com/v1/links`;
-
-  const createRes = await fetch(baseCreate, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${SAVVYCAL_TOKEN}`,
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ name: title, type: 'single', description: `${minutes} min` })
-  });
-  
-  const createText = await createRes.text();
-  if (!createRes.ok) throw new Error(`SavvyCal create failed ${createRes.status}: ${createText}`);
-  
-  const created = JSON.parse(createText);
-  const link = created.link || created;
-  const url = buildUrlFrom(link, SAVVYCAL_SCOPE_SLUG);
-
-  const patchRes = await fetch(`https://api.savvycal.com/v1/links/${link.id}`, {
-    method: 'PATCH',
-    headers: {
-      Authorization: `Bearer ${SAVVYCAL_TOKEN}`,
-      Accept: 'application/json',
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({ durations: [minutes], default_duration: minutes })
-  });
-  
-  if (!patchRes.ok) {
-    const t = await patchRes.text();
-    throw new Error(`SavvyCal PATCH durations failed ${patchRes.status}: ${t}`);
-  }
-  
-  return { id: link.id, url };
-}
-
-async function toggleLink(linkId) {
-  const t = await fetch(`https://api.savvycal.com/v1/links/${linkId}/toggle`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${SAVVYCAL_TOKEN}` }
-  });
-  if (!t.ok) throw new Error(`SavvyCal toggle failed ${t.status}: ${await t.text()}`);
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Bolt app initialization (dual mode)
@@ -223,58 +169,35 @@ function handleSimpleQuestions(text) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Enhanced handlers for different intent types
+// Intent routing
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Scheduling handlers (existing)
-const handleScheduling = ErrorHandler.wrapHandler(async ({ slots, client, channel, thread_ts }) => {
-  const { title, minutes } = slots;
-  if (!title || !minutes) {
-    throw ErrorHandler.ValidationError(
-      'I need a title and duration.',
-      ['schedule "Meeting with John" 30', 'schedule "Project sync" 45']
-    );
-  }
-
-  await client.chat.postMessage({ channel, thread_ts, text: 'Already on it. This is what I do.' });
-  
-  const { url, id } = await createSingleUseLink(title, minutes);
-  dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
-  
-  await client.chat.postMessage({ 
-    channel, 
-    thread_ts, 
-    text: `Done. ${url}\n\nI already took care of it. You're welcome.` 
-  });
-}, 'SavvyCal');
-
-const handleLinkDisabling = ErrorHandler.wrapHandler(async ({ slots, client, channel, thread_ts }) => {
-  const { link_id } = slots;
-  if (!link_id) {
-    throw ErrorHandler.ValidationError('Which link should I disable?');
-  }
-
-  await toggleLink(link_id);
-  await client.chat.postMessage({ 
-    channel, 
-    thread_ts, 
-    text: '✅ Disabled. Please. I\'ve handled worse before breakfast.' 
-  });
-}, 'SavvyCal');
-
-// Intent routing
 async function handleIntent(intent, slots, client, channel, thread_ts, response = '') {
   const params = { slots, client, channel, thread_ts };
   
   switch (intent) {
+    // SavvyCal/Scheduling intents
     case 'schedule_oneoff':
-      await handleScheduling(params);
+      await ErrorHandler.wrapHandler(schedulingHandler.handleCreateSchedulingLink.bind(schedulingHandler), 'SavvyCal')(params);
       break;
       
     case 'disable_link':
-      await handleLinkDisabling(params);
+      await ErrorHandler.wrapHandler(schedulingHandler.handleDisableLink.bind(schedulingHandler), 'SavvyCal')(params);
+      break;
+
+    case 'list_links':
+      await ErrorHandler.wrapHandler(schedulingHandler.handleListLinks.bind(schedulingHandler), 'SavvyCal')(params);
+      break;
+
+    case 'get_link':
+      await ErrorHandler.wrapHandler(schedulingHandler.handleGetLink.bind(schedulingHandler), 'SavvyCal')(params);
+      break;
+
+    case 'delete_link':
+      await ErrorHandler.wrapHandler(schedulingHandler.handleDeleteLink.bind(schedulingHandler), 'SavvyCal')(params);
       break;
       
+    // Time tracking intents
     case 'log_time':
       await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeLog.bind(timeTrackingHandler), 'Toggl')(params);
       break;
@@ -283,6 +206,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeQuery.bind(timeTrackingHandler), 'Toggl')(params);
       break;
       
+    // Project management intents
     case 'list_tasks':
       await ErrorHandler.wrapHandler(projectHandler.handleListTasks.bind(projectHandler), 'Asana')(params);
       break;
@@ -326,12 +250,17 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       }, 'Asana')(params);
       break;
       
+    // Calendar intents
     case 'check_calendar':
       await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')(params);
       break;
       
     case 'create_meeting':
       await ErrorHandler.wrapHandler(calendarHandler.handleCreateMeeting.bind(calendarHandler), 'Google Calendar')(params);
+      break;
+
+    case 'block_time':
+      await ErrorHandler.wrapHandler(calendarHandler.handleBlockTime.bind(calendarHandler), 'Google Calendar')(params);
       break;
       
     case 'update_meeting':
@@ -350,6 +279,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await ErrorHandler.wrapHandler(calendarHandler.handleCalendarRundown.bind(calendarHandler), 'Google Calendar')(params);
       break;
       
+    // General conversation
     case 'general_chat':
       await client.chat.postMessage({
         channel,
@@ -461,6 +391,24 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     return;
   }
 
+  // Fast path for calendar blocking with specific times
+  const blockingPattern = text.match(/block.*time.*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+  if (blockingPattern && (text.includes('block') || text.includes('reserve'))) {
+    const [, startTime, endTime] = blockingPattern;
+    await ErrorHandler.wrapHandler(calendarHandler.handleBlockTime.bind(calendarHandler), 'Google Calendar')({
+      slots: { 
+        title: 'Focus Time', 
+        date: 'today', 
+        start_time: startTime, 
+        end_time: endTime 
+      }, 
+      client, 
+      channel, 
+      thread_ts: responseThreadTs
+    });
+    return;
+  }
+
   // Fast path for exact scheduling commands (backward compatibility)
   const strict = text.match(/^schedule\s+"([^"]+)"\s+(\d{1,3})$/i);
   if (strict) {
@@ -469,9 +417,13 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
 
     await client.chat.postMessage({ channel, thread_ts: responseThreadTs, text: 'Already on it. This is what I do.' });
     try {
-      const { url, id } = await createSingleUseLink(title, minutes);
+      const { url, id } = await savvyCalService.createSingleUseLink(title, minutes);
       dataStore.setThreadData(channel, responseThreadTs, { last_link_id: id });
-      return client.chat.postMessage({ channel, thread_ts: responseThreadTs, text: `Done. ${url}\n\nI already took care of it. You're welcome.` });
+      return client.chat.postMessage({ 
+        channel, 
+        thread_ts: responseThreadTs, 
+        text: `Done. ${url}\n\nI already took care of it. You're welcome.` 
+      });
     } catch (e) {
       logger.error(e);
       return ErrorHandler.handleApiError(e, client, channel, responseThreadTs, 'SavvyCal');
@@ -520,7 +472,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Slash command (existing functionality)
+// Slash command (using new service)
 // ─────────────────────────────────────────────────────────────────────────────
 app.command('/schedule', async ({ command, ack, respond }) => {
   await ack();
@@ -532,31 +484,24 @@ app.command('/schedule', async ({ command, ack, respond }) => {
   const minutes = parseInt(minutesStr, 10);
 
   try {
-    const { url, id } = await createSingleUseLink(title, minutes);
+    const { url, id } = await savvyCalService.createSingleUseLink(title, minutes);
     dataStore.setThreadData(command.channel_id, command.thread_ts || command.trigger_id, { last_link_id: id });
 
     await respond({
       text: url,
-      blocks: [
-        { type: 'section', text: { type: 'mrkdwn', text: `*All set.*\n*${title}* (${minutes} min)\n${url}` } },
-        {
-          type: 'actions',
-          elements: [
-            { type: 'button', text: { type: 'plain_text', text: 'Disable link' }, value: id, action_id: 'sc_disable' }
-          ]
-        }
-      ]
+      blocks: schedulingHandler.createSchedulingBlocks(title, minutes, url, id)
     });
   } catch (e) {
     await respond(`Couldn't create it: ${e.message}`);
   }
 });
 
+// Interactive button handlers
 app.action('sc_disable', async ({ ack, body, client }) => {
   await ack();
   const linkId = body.actions?.[0]?.value;
   try {
-    await toggleLink(linkId);
+    await savvyCalService.toggleLink(linkId);
     await client.chat.postMessage({
       channel: body.channel?.id || body.user?.id,
       thread_ts: body.message?.ts,
@@ -567,6 +512,25 @@ app.action('sc_disable', async ({ ack, body, client }) => {
       channel: body.channel?.id || body.user?.id,
       thread_ts: body.message?.ts,
       text: `Couldn't disable: ${e.message}`
+    });
+  }
+});
+
+app.action('sc_details', async ({ ack, body, client }) => {
+  await ack();
+  const linkId = body.actions?.[0]?.value;
+  try {
+    await schedulingHandler.handleGetLink({
+      slots: { link_id: linkId },
+      client,
+      channel: body.channel?.id || body.user?.id,
+      thread_ts: body.message?.ts
+    });
+  } catch (e) {
+    await client.chat.postMessage({
+      channel: body.channel?.id || body.user?.id,
+      thread_ts: body.message?.ts,
+      text: `Couldn't get details: ${e.message}`
     });
   }
 });
@@ -619,6 +583,13 @@ setInterval(() => {
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   
   // Test API connections on startup
+  try {
+    await savvyCalService.getLinks();
+    console.log('✅ SavvyCal connection verified - Scheduling handled');
+  } catch (error) {
+    console.warn('⚠️ SavvyCal connection failed:', error.message);
+  }
+
   try {
     await togglService.getWorkspaces();
     console.log('✅ Toggl connection verified - Time tracking handled');

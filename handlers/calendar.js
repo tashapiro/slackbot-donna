@@ -44,6 +44,7 @@ class CalendarHandler {
             break;
             
           case 'this week':
+          case 'this_week':
           case 'week':
             events = await googleCalendarService.getEventsThisWeek();
             title = '*This week\'s meetings:*';
@@ -67,11 +68,12 @@ class CalendarHandler {
             freeMessage = 'Nothing on the books tomorrow. Perfect day for deep work.';
             break;
           case 'this week':
+          case 'this_week':
           case 'week':
             freeMessage = 'Light week ahead! Good time to plan your next moves.';
             break;
           default:
-            freeMessage = `No meetings scheduled for ${requestedPeriod}. Lucky you.`;
+            freeMessage = `No meetings scheduled. Lucky you.`;
         }
           
         return await client.chat.postMessage({
@@ -121,7 +123,92 @@ class CalendarHandler {
     }
   }
 
-  // Handle creating new calendar events
+  // Handle blocking time on calendar (personal time blocking)
+  async handleBlockTime({ slots, client, channel, thread_ts }) {
+    try {
+      const { 
+        title, 
+        date, 
+        start_time, 
+        end_time,
+        duration = 60
+      } = slots;
+      
+      if (!title || !date || !start_time) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'I need a title, date, and start time to block calendar time. Try: "block time for deep work tomorrow 2-4pm"'
+        });
+      }
+      
+      // Parse date and time
+      let startTime, endTime;
+      
+      if (end_time) {
+        // User provided both start and end time
+        const { startTime: parsedStart } = googleCalendarService.parseDateTime(date, start_time, 60);
+        const { startTime: parsedEnd } = googleCalendarService.parseDateTime(date, end_time, 60);
+        startTime = parsedStart;
+        endTime = parsedEnd;
+      } else {
+        // Use duration
+        const { startTime: parsedStart, endTime: parsedEnd } = googleCalendarService.parseDateTime(date, start_time, duration);
+        startTime = parsedStart;
+        endTime = parsedEnd;
+      }
+      
+      // Create the calendar event (no attendees for time blocking)
+      const event = await googleCalendarService.createEvent({
+        summary: title,
+        description: 'Time blocked via Donna',
+        startTime,
+        endTime,
+        attendees: [], // No attendees for personal time blocking
+        location: '',
+        meetingType: null
+      });
+      
+      // Format confirmation message
+      const eventDate = new Date(event.start.dateTime);
+      const eventEndDate = new Date(event.end.dateTime);
+      const timeStr = `${eventDate.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'America/New_York'
+      })} - ${eventEndDate.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true,
+        timeZone: 'America/New_York'
+      })}`;
+      const dateStr = eventDate.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        timeZone: 'America/New_York'
+      });
+      
+      let message = `✅ Time blocked: *${event.summary}*\n`;
+      message += `📅 ${dateStr} at ${timeStr}\n`;
+      message += '\n_Your calendar is now protected. Focus time secured._';
+      
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: message
+      });
+      
+    } catch (error) {
+      console.error('Block time error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I couldn't block that time: ${error.message}`
+      });
+    }
+  }
   async handleCreateMeeting({ slots, client, channel, thread_ts }) {
     try {
       const { 

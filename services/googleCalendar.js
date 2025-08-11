@@ -101,43 +101,104 @@ class GoogleCalendarService {
 
   // Get events for today
   async getEventsToday() {
-    const today = new Date();
-    const startOfDay = new Date(today.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(today.setHours(23, 59, 59, 999));
+    const { startOfDay, endOfDay } = this.getTodayDateRange();
     
     return this.getEvents({
-      timeMin: startOfDay.toISOString(),
-      timeMax: endOfDay.toISOString()
+      timeMin: startOfDay,
+      timeMax: endOfDay
     });
   }
 
   // Get events for this week
   async getEventsThisWeek() {
-    const today = new Date();
-    const startOfWeek = new Date(today);
-    startOfWeek.setDate(today.getDate() - today.getDay()); // Sunday
-    startOfWeek.setHours(0, 0, 0, 0);
-    
-    const endOfWeek = new Date(startOfWeek);
-    endOfWeek.setDate(startOfWeek.getDate() + 6); // Saturday
-    endOfWeek.setHours(23, 59, 59, 999);
+    const { startOfWeek, endOfWeek } = this.getWeekDateRange();
     
     return this.getEvents({
-      timeMin: startOfWeek.toISOString(),
-      timeMax: endOfWeek.toISOString()
+      timeMin: startOfWeek,
+      timeMax: endOfWeek
     });
   }
 
   // Get events for a specific date
   async getEventsForDate(date) {
-    const targetDate = new Date(date);
-    const startOfDay = new Date(targetDate.setHours(0, 0, 0, 0));
-    const endOfDay = new Date(targetDate.setHours(23, 59, 59, 999));
+    const { startOfDay, endOfDay } = this.getDateRange(date);
     
     return this.getEvents({
-      timeMin: startOfDay.toISOString(),
-      timeMax: endOfDay.toISOString()
+      timeMin: startOfDay,
+      timeMax: endOfDay
     });
+  }
+
+  // Helper: Get today's date range in user's timezone
+  getTodayDateRange() {
+    // Use a more reliable method to get today in Eastern Time
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const day = now.getDate();
+    
+    // Create start and end of day in local time, then convert to UTC
+    const startOfDay = new Date(year, month, day, 0, 0, 0, 0);
+    const endOfDay = new Date(year, month, day, 23, 59, 59, 999);
+    
+    return {
+      startOfDay: startOfDay.toISOString(),
+      endOfDay: endOfDay.toISOString()
+    };
+  }
+
+  // Helper: Get week date range in user's timezone
+  getWeekDateRange() {
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = now.getMonth();
+    const day = now.getDate();
+    
+    // Get the current day of the week (0 = Sunday)
+    const dayOfWeek = now.getDay();
+    
+    // Calculate start of week (Sunday)
+    const startOfWeek = new Date(year, month, day - dayOfWeek, 0, 0, 0, 0);
+    
+    // Calculate end of week (Saturday)
+    const endOfWeek = new Date(year, month, day - dayOfWeek + 6, 23, 59, 59, 999);
+    
+    return {
+      startOfWeek: startOfWeek.toISOString(),
+      endOfWeek: endOfWeek.toISOString()
+    };
+  }
+
+  // Helper: Get specific date range in user's timezone
+  getDateRange(dateInput) {
+    if (typeof dateInput === 'string' && dateInput.toLowerCase() === 'today') {
+      return this.getTodayDateRange();
+    }
+    
+    let targetDate;
+    
+    if (typeof dateInput === 'string' && dateInput.toLowerCase() === 'tomorrow') {
+      // Get tomorrow
+      const now = new Date();
+      targetDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+    } else if (typeof dateInput === 'string') {
+      // Parse date string
+      targetDate = new Date(dateInput);
+    } else {
+      targetDate = new Date(dateInput);
+    }
+    
+    const year = targetDate.getFullYear();
+    const month = targetDate.getMonth(); 
+    const day = targetDate.getDate();
+    
+    const startOfDay = new Date(year, month, day, 0, 0, 0, 0);
+    const endOfDay = new Date(year, month, day, 23, 59, 59, 999);
+    
+    return {
+      startOfDay: startOfDay.toISOString(),
+      endOfDay: endOfDay.toISOString()
+    };
   }
 
   // Create a new calendar event
