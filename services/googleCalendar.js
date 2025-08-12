@@ -590,48 +590,67 @@ class GoogleCalendarService {
   }
 
   // Parse natural language dates in specific timezone
-  parseDate(dateStr, userTimezone = this.defaultTimezone) {
+  // Fixed parseDate function for googleCalendar.js
+// Replace the existing parseDate method with this corrected version
+
+// Parse natural language dates in specific timezone (FIXED)
+parseDate(dateStr, userTimezone = this.defaultTimezone) {
     const str = dateStr.toLowerCase().trim();
     
-    // Get current date in user's timezone using proper timezone handling
+    console.log(`Parsing date "${dateStr}" in timezone ${userTimezone}`);
+    
+    // Get current date components in user's timezone using proper timezone handling
     const now = new Date();
-    const userNow = new Date(now.toLocaleString('en-US', { timeZone: userTimezone }));
+    const formatter = new Intl.DateTimeFormat('en-CA', { 
+      timeZone: userTimezone, 
+      year: 'numeric',
+      month: '2-digit', 
+      day: '2-digit'
+    });
+    const parts = formatter.formatToParts(now);
+    const userToday = {
+      year: parseInt(parts.find(p => p.type === 'year').value),
+      month: parseInt(parts.find(p => p.type === 'month').value) - 1, // Convert to 0-indexed for JS Date
+      day: parseInt(parts.find(p => p.type === 'day').value)
+    };
+    
+    console.log(`Current date in ${userTimezone}:`, userToday);
     
     switch (str) {
       case 'today':
-        return {
-          year: userNow.getFullYear(),
-          month: userNow.getMonth(),
-          day: userNow.getDate()
-        };
+        console.log(`Returning today: ${userToday.year}-${userToday.month + 1}-${userToday.day}`);
+        return userToday;
         
       case 'tomorrow':
-        // FIXED: Properly calculate tomorrow in user's timezone
-        const tomorrow = new Date(userNow);
-        tomorrow.setDate(userNow.getDate() + 1);
-        return {
-          year: tomorrow.getFullYear(),
-          month: tomorrow.getMonth(),
-          day: tomorrow.getDate()
+        // Calculate tomorrow properly in user's timezone
+        const tomorrowDate = new Date(userToday.year, userToday.month, userToday.day + 1);
+        const tomorrow = {
+          year: tomorrowDate.getFullYear(),
+          month: tomorrowDate.getMonth(),
+          day: tomorrowDate.getDate()
         };
+        console.log(`Returning tomorrow: ${tomorrow.year}-${tomorrow.month + 1}-${tomorrow.day}`);
+        return tomorrow;
         
       case 'yesterday':
-        const yesterday = new Date(userNow);
-        yesterday.setDate(userNow.getDate() - 1);
-        return {
-          year: yesterday.getFullYear(),
-          month: yesterday.getMonth(),
-          day: yesterday.getDate()
+        const yesterdayDate = new Date(userToday.year, userToday.month, userToday.day - 1);
+        const yesterday = {
+          year: yesterdayDate.getFullYear(),
+          month: yesterdayDate.getMonth(),
+          day: yesterdayDate.getDate()
         };
+        console.log(`Returning yesterday: ${yesterday.year}-${yesterday.month + 1}-${yesterday.day}`);
+        return yesterday;
         
       case 'next week':
-        const nextWeek = new Date(userNow);
-        nextWeek.setDate(userNow.getDate() + 7);
-        return {
-          year: nextWeek.getFullYear(),
-          month: nextWeek.getMonth(),
-          day: nextWeek.getDate()
+        const nextWeekDate = new Date(userToday.year, userToday.month, userToday.day + 7);
+        const nextWeek = {
+          year: nextWeekDate.getFullYear(),
+          month: nextWeekDate.getMonth(),
+          day: nextWeekDate.getDate()
         };
+        console.log(`Returning next week: ${nextWeek.year}-${nextWeek.month + 1}-${nextWeek.day}`);
+        return nextWeek;
         
       default:
         // Handle weekday names
@@ -639,39 +658,75 @@ class GoogleCalendarService {
         const targetDay = weekdays.indexOf(str);
         
         if (targetDay !== -1) {
-          const currentDay = userNow.getDay();
+          // Get current day of week in user's timezone
+          const currentDateInTz = new Date(userToday.year, userToday.month, userToday.day);
+          const currentDay = currentDateInTz.getDay();
+          
           let daysUntilTarget = targetDay - currentDay;
           if (daysUntilTarget <= 0) daysUntilTarget += 7; // Next occurrence
           
-          const targetDate = new Date(userNow);
-          targetDate.setDate(userNow.getDate() + daysUntilTarget);
-          
-          return {
+          const targetDate = new Date(userToday.year, userToday.month, userToday.day + daysUntilTarget);
+          const result = {
             year: targetDate.getFullYear(),
             month: targetDate.getMonth(),
             day: targetDate.getDate()
           };
+          console.log(`Returning ${str}: ${result.year}-${result.month + 1}-${result.day}`);
+          return result;
         }
         
-        // Try to parse as a standard date
-        const parsed = new Date(dateStr);
+        // Try to parse as a standard date (like "August 12th", "2025-08-12", etc.)
+        console.log(`Attempting to parse "${dateStr}" as standard date`);
+        
+        // Handle various date formats
+        let parsed;
+        
+        // Try parsing as "August 12th", "Aug 12", "8/12", etc.
+        if (str.includes('august') || str.includes('aug')) {
+          // Extract day from "august 12th" or "aug 12"
+          const dayMatch = str.match(/(\d{1,2})/);
+          if (dayMatch) {
+            const day = parseInt(dayMatch[1]);
+            // Determine year - if we're past August in current year, assume next year
+            let year = userToday.year;
+            if (userToday.month > 7 || (userToday.month === 7 && userToday.day > day)) {
+              year = userToday.year + 1;
+            }
+            const result = { year, month: 7, day }; // August = month 7 (0-indexed)
+            console.log(`Parsed August date: ${result.year}-${result.month + 1}-${result.day}`);
+            return result;
+          }
+        }
+        
+        // Try parsing with Date constructor
+        parsed = new Date(dateStr);
         if (!isNaN(parsed.getTime())) {
-          try {
-            const userParsed = new Date(parsed.toLocaleString('en-US', { timeZone: userTimezone }));
-            return {
-              year: userParsed.getFullYear(),
-              month: userParsed.getMonth(),
-              day: userParsed.getDate()
+          // Get the parsed date components
+          // Note: For date strings like "2025-08-12", Date constructor treats as UTC
+          // but for display strings like "August 12, 2025", it treats as local
+          
+          let result;
+          if (dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            // ISO date format - treat as user's timezone date
+            result = {
+              year: parseInt(dateStr.split('-')[0]),
+              month: parseInt(dateStr.split('-')[1]) - 1, // Convert to 0-indexed
+              day: parseInt(dateStr.split('-')[2])
             };
-          } catch (error) {
-            console.error(`Error parsing date in timezone ${userTimezone}:`, error);
-            return {
+          } else {
+            // Other formats - use parsed date but be careful about timezone
+            result = {
               year: parsed.getFullYear(),
               month: parsed.getMonth(),
               day: parsed.getDate()
             };
           }
+          
+          console.log(`Parsed standard date: ${result.year}-${result.month + 1}-${result.day}`);
+          return result;
         }
+        
+        console.error(`Cannot parse date: ${dateStr}`);
         throw new Error(`Cannot parse date: ${dateStr}`);
     }
   }
