@@ -1,21 +1,15 @@
-// services/savvycal.js - SavvyCal API integration (FIXED)
+// services/savvycal.js - SavvyCal API integration with hard-coded indievisual scope
 const dataStore = require('../utils/dataStore');
 
 class SavvyCalService {
   constructor() {
     this.apiToken = process.env.SAVVYCAL_TOKEN;
-    this.scopeSlug = process.env.SAVVYCAL_SCOPE_SLUG;
+    // Hard-code the scope to always use "indievisual"
+    this.scopeSlug = 'indievisual';
     this.baseUrl = 'https://api.savvycal.com/v1';
     
     if (!this.apiToken) {
       console.warn('SAVVYCAL_TOKEN not configured');
-    }
-    
-    // Debug logging
-    if (this.scopeSlug) {
-      console.log(`SavvyCal: Using scope slug: ${this.scopeSlug}`);
-    } else {
-      console.log('SavvyCal: Using personal scope (no scope slug configured)');
     }
   }
 
@@ -30,38 +24,42 @@ class SavvyCalService {
     };
   }
 
-  // Build URL from SavvyCal link object - Force scope when configured
+  // Build URL from SavvyCal link object (FIXED to always use indievisual)
   buildUrlFrom(link, scope = null) {
-    const slug = link.slug || '';
+    const slug = link.slug || link.id || '';
+    
+    // If link already has a full URL, return it
     if (link.url) return link.url;
-    if (slug.includes('/')) return `https://savvycal.com/${slug}`;
     
-    // FORCE scope usage if configured, even for personal endpoint links
-    const useScope = scope || this.scopeSlug;
-    
-    // Since we know from your link data that all links belong to "indievisual" scope,
-    // always use it when configured, regardless of which endpoint was used
-    if (this.scopeSlug) {
-      console.log(`Building URL with forced scope: ${this.scopeSlug}/${slug}`);
-      return `https://savvycal.com/${this.scopeSlug}/${slug}`;
+    // If slug already contains a slash (like "indievisual/abc123"), use it as-is
+    if (slug.includes('/')) {
+      return `https://savvycal.com/${slug}`;
     }
     
-    return useScope ? `https://savvycal.com/${useScope}/${slug}` : `https://savvycal.com/${slug}`;
+    // Always use "indievisual" as the scope - never fall back to just the slug
+    const useScope = scope || this.scopeSlug;
+    if (useScope) {
+      const finalUrl = `https://savvycal.com/${useScope}/${slug}`;
+      console.log(`Built SavvyCal URL: ${finalUrl}`);
+      return finalUrl;
+    } else {
+      // This shouldn't happen since we hard-code scopeSlug, but just in case
+      console.warn('No scope slug available, falling back to basic URL');
+      return `https://savvycal.com/${slug}`;
+    }
   }
 
-  // Create a single-use scheduling link
+  // Create a single-use scheduling link (UPDATED to ensure proper URL)
   async createSingleUseLink(title, minutes) {
     if (!this.apiToken) throw new Error('SavvyCal API token not configured');
 
-    // Always try scoped endpoint first if scope is configured
-    let baseCreate = this.scopeSlug
-      ? `${this.baseUrl}/scopes/${this.scopeSlug}/links`
-      : `${this.baseUrl}/links`;
+    // Always use scoped endpoint
+    const baseCreate = `${this.baseUrl}/scopes/${this.scopeSlug}/links`;
 
-    console.log(`Creating SavvyCal link at: ${baseCreate}`);
+    console.log(`Creating SavvyCal link via scoped endpoint: ${baseCreate}`);
 
     // Step 1: Create the link
-    let createRes = await fetch(baseCreate, {
+    const createRes = await fetch(baseCreate, {
       method: 'POST',
       headers: this.getAuthHeaders(),
       body: JSON.stringify({ 
@@ -71,36 +69,20 @@ class SavvyCalService {
       })
     });
     
-    // If scoped creation fails, try personal endpoint as fallback
-    if (!createRes.ok && createRes.status === 404 && this.scopeSlug) {
-      console.log(`Scoped creation failed, trying personal endpoint...`);
-      baseCreate = `${this.baseUrl}/links`;
-      
-      createRes = await fetch(baseCreate, {
-        method: 'POST',
-        headers: this.getAuthHeaders(),
-        body: JSON.stringify({ 
-          name: title, 
-          type: 'single', 
-          description: `${minutes} min` 
-        })
-      });
-    }
-    
     const createText = await createRes.text();
     if (!createRes.ok) {
-      console.error(`SavvyCal create error: ${createRes.status} ${createText}`);
       throw new Error(`SavvyCal create failed ${createRes.status}: ${createText}`);
     }
     
     const created = JSON.parse(createText);
     const link = created.link || created;
     
-    // Use scope if we successfully created via scoped endpoint
-    const effectiveScope = baseCreate.includes('/scopes/') ? this.scopeSlug : null;
-    const url = this.buildUrlFrom(link, effectiveScope);
-
-    console.log(`Created link with effective scope: ${effectiveScope}, URL: ${url}`);
+    console.log(`Created link response:`, link);
+    
+    // Build the URL ensuring it includes indievisual
+    const url = this.buildUrlFrom(link, this.scopeSlug);
+    
+    console.log(`Final URL: ${url}`);
 
     // Step 2: Update the link with duration settings
     const patchRes = await fetch(`${this.baseUrl}/links/${link.id}`, {
@@ -114,8 +96,12 @@ class SavvyCalService {
     
     if (!patchRes.ok) {
       const patchText = await patchRes.text();
-      console.error(`SavvyCal patch error: ${patchRes.status} ${patchText}`);
       throw new Error(`SavvyCal PATCH durations failed ${patchRes.status}: ${patchText}`);
+    }
+    
+    // Verify the final URL format
+    if (!url.includes('indievisual')) {
+      console.warn(`WARNING: Created URL does not contain 'indievisual': ${url}`);
     }
     
     return { id: link.id, url };
@@ -132,7 +118,6 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`SavvyCal toggle error: ${response.status} ${errorText}`);
       throw new Error(`SavvyCal toggle failed ${response.status}: ${errorText}`);
     }
 
@@ -153,7 +138,6 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`SavvyCal get link error: ${response.status} ${errorText}`);
       throw new Error(`SavvyCal get link failed ${response.status}: ${errorText}`);
     }
 
@@ -161,18 +145,16 @@ class SavvyCalService {
     return data.link || data;
   }
 
-  // List all links - FIXED: Use correct response property + Auto-fallback
+  // List all links (UPDATED to use scoped endpoint)
   async getLinks() {
     if (!this.apiToken) throw new Error('SavvyCal API token not configured');
 
-    // Try with scope first, then fallback to personal if scope fails
-    let url = this.scopeSlug
-      ? `${this.baseUrl}/scopes/${this.scopeSlug}/links`
-      : `${this.baseUrl}/links`;
+    // Always use scoped endpoint
+    const url = `${this.baseUrl}/scopes/${this.scopeSlug}/links`;
 
-    console.log(`Fetching SavvyCal links from: ${url}`);
+    console.log(`Fetching links from scoped endpoint: ${url}`);
 
-    let response = await fetch(url, {
+    const response = await fetch(url, {
       method: 'GET',
       headers: { 
         'Authorization': `Bearer ${this.apiToken}`,
@@ -180,48 +162,13 @@ class SavvyCalService {
       }
     });
 
-    // If scope fails with 404, try personal scope as fallback
-    if (!response.ok && response.status === 404 && this.scopeSlug) {
-      console.log(`Scope "${this.scopeSlug}" failed, trying personal scope...`);
-      url = `${this.baseUrl}/links`;
-      
-      response = await fetch(url, {
-        method: 'GET',
-        headers: { 
-          'Authorization': `Bearer ${this.apiToken}`,
-          'Accept': 'application/json'
-        }
-      });
-    }
-
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`SavvyCal get links error: ${response.status} ${errorText}`);
-      
-      // Provide more helpful error messages
-      if (response.status === 404) {
-        if (this.scopeSlug) {
-          throw new Error(`SavvyCal scope "${this.scopeSlug}" not found and personal scope also failed. Check your API token and scope configuration.`);
-        } else {
-          throw new Error(`SavvyCal links endpoint not found. Check your API token permissions.`);
-        }
-      } else if (response.status === 401) {
-        throw new Error(`SavvyCal authentication failed. Check your API token.`);
-      } else if (response.status === 403) {
-        throw new Error(`SavvyCal access forbidden. Your API token may not have the required permissions.`);
-      }
-      
       throw new Error(`SavvyCal get links failed ${response.status}: ${errorText}`);
     }
 
     const data = await response.json();
-    console.log(`SavvyCal response structure:`, Object.keys(data));
-    
-    // FIXED: Use 'entries' instead of 'links' based on API documentation
-    const links = data.entries || data.links || data;
-    console.log(`Found ${Array.isArray(links) ? links.length : 'unknown'} SavvyCal links`);
-    
-    return links;
+    return data.links || data;
   }
 
   // Delete a link
@@ -235,7 +182,6 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      console.error(`SavvyCal delete error: ${response.status} ${errorText}`);
       throw new Error(`SavvyCal delete failed ${response.status}: ${errorText}`);
     }
 
