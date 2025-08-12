@@ -71,24 +71,43 @@ class GoogleCalendarService {
     
     console.log(`Creating date in timezone ${userTimezone}:`, dateComponents);
     
-    // Create a properly formatted date string for the user's timezone
-    const timeString = `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-    const dateString = `${year}-${(month + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}`;
-    
-    // Create the date in the user's timezone using a more reliable method
-    const isoString = `${dateString}T${timeString}`;
-    
-    // Get the timezone offset for the user's timezone at this specific date
-    const tempDate = new Date(isoString);
-    const utcTime = tempDate.getTime() + (tempDate.getTimezoneOffset() * 60000);
-    
-    // Get the offset for the user's timezone
-    const userTimezoneOffset = this.getTimezoneOffset(tempDate, userTimezone);
-    
-    // Create the final date adjusted for the user's timezone
-    const userTime = new Date(utcTime + (userTimezoneOffset * 60000));
-    
-    return userTime;
+    try {
+      // Use a more reliable approach - create the date string in ISO format
+      // and then convert to the target timezone
+      const monthStr = (month + 1).toString().padStart(2, '0');
+      const dayStr = day.toString().padStart(2, '0');
+      const hoursStr = hours.toString().padStart(2, '0');
+      const minutesStr = minutes.toString().padStart(2, '0');
+      const secondsStr = seconds.toString().padStart(2, '0');
+      
+      // Create date string in target timezone
+      const dateString = `${year}-${monthStr}-${dayStr}T${hoursStr}:${minutesStr}:${secondsStr}`;
+      
+      console.log(`Date string: ${dateString}`);
+      
+      // Create a date object and adjust for timezone
+      // This approach handles DST transitions properly
+      const tempDate = new Date(`${dateString}.000Z`); // Start with UTC
+      
+      // Get the timezone offset for this specific date/time
+      const targetTime = new Date(tempDate.toLocaleString('en-US', { timeZone: userTimezone }));
+      const utcTime = new Date(tempDate.toLocaleString('en-US', { timeZone: 'UTC' }));
+      const offset = targetTime.getTime() - utcTime.getTime();
+      
+      // Apply the offset to get the correct UTC time
+      const finalDate = new Date(tempDate.getTime() - offset);
+      
+      console.log(`Created date: ${finalDate.toISOString()} (${finalDate.toLocaleString('en-US', { timeZone: userTimezone })} in ${userTimezone})`);
+      
+      return finalDate;
+      
+    } catch (error) {
+      console.error(`Error creating date in timezone ${userTimezone}:`, error);
+      // Fallback to simpler approach
+      const date = new Date(year, month, day, hours, minutes, seconds);
+      console.log(`Fallback date: ${date.toISOString()}`);
+      return date;
+    }
   }
 
   // Get timezone offset for a specific timezone and date
@@ -574,32 +593,44 @@ class GoogleCalendarService {
   parseDate(dateStr, userTimezone = this.defaultTimezone) {
     const str = dateStr.toLowerCase().trim();
     
-    // Get current date in user's timezone
-    const today = this.getCurrentDateInUserTimezone(userTimezone);
+    // Get current date in user's timezone using proper timezone handling
+    const now = new Date();
+    const userNow = new Date(now.toLocaleString('en-US', { timeZone: userTimezone }));
     
     switch (str) {
       case 'today':
-        return today;
+        return {
+          year: userNow.getFullYear(),
+          month: userNow.getMonth(),
+          day: userNow.getDate()
+        };
         
       case 'tomorrow':
+        // FIXED: Properly calculate tomorrow in user's timezone
+        const tomorrow = new Date(userNow);
+        tomorrow.setDate(userNow.getDate() + 1);
         return {
-          year: today.year,
-          month: today.month,
-          day: today.day + 1
+          year: tomorrow.getFullYear(),
+          month: tomorrow.getMonth(),
+          day: tomorrow.getDate()
         };
         
       case 'yesterday':
+        const yesterday = new Date(userNow);
+        yesterday.setDate(userNow.getDate() - 1);
         return {
-          year: today.year,
-          month: today.month,
-          day: today.day - 1
+          year: yesterday.getFullYear(),
+          month: yesterday.getMonth(),
+          day: yesterday.getDate()
         };
         
       case 'next week':
+        const nextWeek = new Date(userNow);
+        nextWeek.setDate(userNow.getDate() + 7);
         return {
-          year: today.year,
-          month: today.month,
-          day: today.day + 7
+          year: nextWeek.getFullYear(),
+          month: nextWeek.getMonth(),
+          day: nextWeek.getDate()
         };
         
       default:
@@ -608,15 +639,17 @@ class GoogleCalendarService {
         const targetDay = weekdays.indexOf(str);
         
         if (targetDay !== -1) {
-          const currentDate = this.createDateInUserTimezone(today, userTimezone);
-          const currentDay = currentDate.getDay();
+          const currentDay = userNow.getDay();
           let daysUntilTarget = targetDay - currentDay;
           if (daysUntilTarget <= 0) daysUntilTarget += 7; // Next occurrence
           
+          const targetDate = new Date(userNow);
+          targetDate.setDate(userNow.getDate() + daysUntilTarget);
+          
           return {
-            year: today.year,
-            month: today.month,
-            day: today.day + daysUntilTarget
+            year: targetDate.getFullYear(),
+            month: targetDate.getMonth(),
+            day: targetDate.getDate()
           };
         }
         
@@ -645,30 +678,49 @@ class GoogleCalendarService {
 
   // Helper: Parse time strings to local hours/minutes
   parseTime(timeStr) {
-    const timeRegex = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
-    const match = timeStr.match(timeRegex);
+    console.log(`Parsing time: "${timeStr}"`);
     
-    if (!match) throw new Error(`Cannot parse time: ${timeStr}`);
+    // Handle various time formats: "8am", "8:00am", "8 am", "8:30pm", "17:00", etc.
+    const timeRegex = /(\d{1,2})(?::(\d{2}))?\s*(am|pm|AM|PM)?/i;
+    const match = timeStr.trim().match(timeRegex);
+    
+    if (!match) {
+      console.error(`Cannot parse time: ${timeStr}`);
+      throw new Error(`Cannot parse time: ${timeStr}`);
+    }
     
     let hours = parseInt(match[1]);
     const minutes = parseInt(match[2] || '0');
     const ampm = match[3]?.toLowerCase();
     
-    if (ampm === 'pm' && hours !== 12) hours += 12;
-    if (ampm === 'am' && hours === 12) hours = 0;
+    console.log(`Parsed components - hours: ${hours}, minutes: ${minutes}, ampm: ${ampm}`);
+    
+    // Handle AM/PM conversion
+    if (ampm === 'pm' && hours !== 12) {
+      hours += 12;
+    } else if (ampm === 'am' && hours === 12) {
+      hours = 0;
+    }
+    
+    // Validate the result
+    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) {
+      throw new Error(`Invalid time: ${timeStr} (parsed as ${hours}:${minutes})`);
+    }
+    
+    console.log(`Final parsed time - hours: ${hours}, minutes: ${minutes}`);
     
     return { hours, minutes };
   }
 
   // Parse time range (e.g., "8am to 5pm") in specific timezone
   parseTimeRange(dateStr, startTimeStr, endTimeStr, userTimezone = this.defaultTimezone) {
+    console.log(`Parsing time range: "${dateStr}" from "${startTimeStr}" to "${endTimeStr}" in timezone ${userTimezone}`);
+    
     const dateComponents = this.parseDate(dateStr, userTimezone);
+    console.log(`Date components:`, dateComponents);
     
     const startTime = this.parseTime(startTimeStr);
     const endTime = this.parseTime(endTimeStr);
-    
-    console.log(`Parsing time range in ${userTimezone}: ${dateStr} from ${startTimeStr} to ${endTimeStr}`);
-    console.log(`Date components:`, dateComponents);
     console.log(`Start time:`, startTime);
     console.log(`End time:`, endTime);
     
@@ -692,6 +744,7 @@ class GoogleCalendarService {
     }, userTimezone);
     
     console.log(`Final times - Start: ${startDate.toISOString()}, End: ${endDate.toISOString()}`);
+    console.log(`In user timezone - Start: ${startDate.toLocaleString('en-US', { timeZone: userTimezone })}, End: ${endDate.toLocaleString('en-US', { timeZone: userTimezone })}`);
     
     return {
       startTime: startDate.toISOString(),
