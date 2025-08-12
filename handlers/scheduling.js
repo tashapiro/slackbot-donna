@@ -1,4 +1,4 @@
-// handlers/scheduling.js - Handle scheduling-related intents
+// handlers/scheduling.js - Handle scheduling-related intents with enhanced context storage
 const savvyCalService = require('../services/savvycal');
 const dataStore = require('../utils/dataStore');
 
@@ -30,8 +30,21 @@ class SchedulingHandler {
       // Create the link
       const { url, id } = await savvyCalService.createSingleUseLink(cleanTitle, validatedDuration);
       
-      // Store link ID for potential future disable requests
-      dataStore.setThreadData(channel, thread_ts, { last_link_id: id });
+      // Store comprehensive link context for future reference and AI awareness
+      dataStore.setThreadData(channel, thread_ts, { 
+        last_link_id: id, 
+        last_link_url: url,
+        last_link_title: cleanTitle,
+        last_link_duration: validatedDuration,
+        last_action: 'created_scheduling_link',
+        last_action_time: Date.now(),
+        // Additional context that might be useful
+        link_created_at: new Date().toISOString(),
+        link_type: 'single_use'
+      });
+      
+      console.log(`Created scheduling link: ${cleanTitle} (${validatedDuration} min) - ${url}`);
+      console.log(`Stored context for thread ${channel}::${thread_ts}`);
       
       // Send success message
       await client.chat.postMessage({ 
@@ -70,6 +83,15 @@ class SchedulingHandler {
       }
 
       await savvyCalService.toggleLink(link_id);
+      
+      // Update thread context to reflect the action
+      const threadData = dataStore.getThreadData(channel, thread_ts);
+      dataStore.setThreadData(channel, thread_ts, {
+        ...threadData,
+        last_action: 'disabled_scheduling_link',
+        last_action_time: Date.now(),
+        link_disabled_at: new Date().toISOString()
+      });
       
       await client.chat.postMessage({ 
         channel, 
@@ -116,6 +138,13 @@ class SchedulingHandler {
       if (links.length > 10) {
         message += `_...and ${links.length - 10} more_`;
       }
+
+      // Update thread context to remember this action
+      dataStore.setThreadData(channel, thread_ts, {
+        last_action: 'listed_scheduling_links',
+        last_action_time: Date.now(),
+        total_links_count: links.length
+      });
 
       await client.chat.postMessage({
         channel,
@@ -173,6 +202,13 @@ class SchedulingHandler {
         message += `Default: ${link.default_duration} minutes\n`;
       }
 
+      // Update thread context
+      dataStore.setThreadData(channel, thread_ts, {
+        last_action: 'viewed_link_details',
+        last_action_time: Date.now(),
+        viewed_link_id: link_id
+      });
+
       await client.chat.postMessage({
         channel,
         thread_ts,
@@ -210,8 +246,17 @@ class SchedulingHandler {
 
       await savvyCalService.deleteLink(link_id);
       
-      // Clear the stored link ID since it's now deleted
-      dataStore.setThreadData(channel, thread_ts, { last_link_id: null });
+      // Clear the stored link ID since it's now deleted, but keep record of the action
+      const threadData = dataStore.getThreadData(channel, thread_ts);
+      dataStore.setThreadData(channel, thread_ts, { 
+        ...threadData,
+        last_link_id: null,
+        last_link_url: null,
+        last_action: 'deleted_scheduling_link',
+        last_action_time: Date.now(),
+        deleted_link_id: link_id,
+        deleted_at: new Date().toISOString()
+      });
       
       await client.chat.postMessage({ 
         channel, 
@@ -258,6 +303,27 @@ class SchedulingHandler {
         ]
       }
     ];
+  }
+
+  // Helper method to get recent scheduling activity context
+  getRecentSchedulingContext(channel, thread_ts) {
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    
+    // Check if there's recent scheduling activity (within last 10 minutes)
+    if (threadData.last_action_time && (Date.now() - threadData.last_action_time) < 600000) {
+      return {
+        hasRecentActivity: true,
+        lastAction: threadData.last_action,
+        lastLinkId: threadData.last_link_id,
+        lastLinkUrl: threadData.last_link_url,
+        lastLinkTitle: threadData.last_link_title,
+        minutesSinceAction: Math.floor((Date.now() - threadData.last_action_time) / 60000)
+      };
+    }
+    
+    return {
+      hasRecentActivity: false
+    };
   }
 }
 

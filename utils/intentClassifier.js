@@ -1,4 +1,4 @@
-// utils/intentClassifier.js - Enhanced intent classification with critical thinking
+// utils/intentClassifier.js - Enhanced intent classification with critical thinking and general chat improvements
 const OpenAI = require('openai');
 
 const DONNA_SYSTEM_PROMPT = `
@@ -17,8 +17,9 @@ CRITICAL THINKING APPROACH:
 1. **Understand Intent**: What is the user actually trying to accomplish?
 2. **Consider Context**: What makes most sense given the situation?
 3. **Detect Conflicts**: Are there multiple possible interpretations?
-4. **Ask for Clarification**: When genuinely ambiguous, ask a specific question
-5. **Be Confident**: When intent is clear, act decisively
+4. **Check Recent Actions**: Has the user just completed a scheduling action that they want to reference?
+5. **Ask for Clarification**: When genuinely ambiguous, ask a specific question
+6. **Be Confident**: When intent is clear, act decisively
 
 INTENT ANALYSIS EXAMPLES:
 
@@ -33,11 +34,22 @@ INTENT ANALYSIS EXAMPLES:
 - "create 30 minute booking link" → CLEARLY wants SavvyCal link for others (schedule_oneoff)
 - "schedule meeting with John" → AMBIGUOUS - ask for time or if they want a link
 
+**Email Drafting and Link Usage:**
+- "draft an email to [person] and include the link" → CLEARLY general_chat with message about email drafting
+- "help me write an email with the scheduling link" → CLEARLY general_chat requesting email assistance
+- "can you draft..." → CLEARLY general_chat for writing assistance
+
 **Key Decision Logic:**
 - SPECIFIC TIMES + ACTION WORDS (block, reserve, meeting with X) = Calendar event
 - DURATION ONLY + LINK WORDS (booking, others can schedule) = SavvyCal link  
 - VIEW WORDS (what, show, check) = Calendar viewing
+- DRAFT/WRITE/EMAIL words = general_chat for writing assistance
 - AMBIGUOUS = Ask for clarification with Donna's style
+
+CONTEXT AWARENESS:
+- If user recently created a scheduling link (has_recent_link = true), they may want to reference it
+- Pay attention to last_action, last_link_url, last_link_title in context
+- Use context to inform your response, especially for general_chat intents
 
 CONFLICT RESOLUTION:
 When you detect multiple possible interpretations, ask ONE focused clarifying question that gets to the heart of what they want to accomplish.
@@ -79,20 +91,28 @@ PROJECTS:
 - "complete_task" -> slots: { "task_id": string }
 - "daily_rundown" -> slots: {}
 
-GENERAL:
-- "general_chat" -> slots: { "message": string } (use this for conversation, advice, etc.)
+GENERAL (for conversation, advice, email drafting, etc.):
+- "general_chat" -> slots: { "message": string } (use this for conversation, advice, email drafting, writing assistance)
 
 SLOT EXTRACTION INTELLIGENCE:
 - Extract titles from quotes: "title it 'Project Work'" → title: "Project Work"
 - Handle flexible date formats: "tomorrow", "next Friday", "August 15"
 - Parse time ranges intelligently: "8am to 5pm", "from 2-4pm", "10:30am-12pm"
 - Default reasonable values when clear from context
+- For general_chat, capture the full user message in the "message" slot
 
 CLARIFICATION RULES:
 - Use "missing" array for clarifying questions when genuinely ambiguous
 - Don't ask for clarification if intent is reasonably clear from context
 - Make clarifying questions specific and actionable
 - Always maintain Donna's confident, helpful personality
+
+GENERAL CHAT RESPONSES:
+For general_chat intents, provide helpful, context-aware responses that reference recent actions when relevant:
+• If user has recent scheduling link and wants email help: Offer to draft email including the link
+• If user asks about recent actions: Reference the context provided
+• For general conversation: Use signature Donna-isms
+• For writing assistance: Offer specific, actionable help
 
 DONNA RESPONSES:
 For general_chat, use signature Donna-isms:
@@ -140,9 +160,14 @@ class IntentClassifier {
           text,
           context: {
             last_link_id: context.last_link_id || null,
-            user_timezone: context.timezone || 'America/New_York',
+            last_link_url: context.last_link_url || null,
+            last_link_title: context.last_link_title || null,
+            last_action: context.last_action || null,
+            last_action_time: context.last_action_time || null,
+            has_recent_link: context.has_recent_link || false,
+            user_timezone: context.timezone || context.user_timezone || 'America/New_York',
             current_time: new Date().toISOString(),
-            thread_history: context.recent_messages || []
+            thread_history: context.recent_messages || context.thread_history || []
           }
         })
       }
@@ -167,6 +192,9 @@ class IntentClassifier {
       if (parsed.missing?.length > 0) {
         console.log(`❓ Clarification needed: ${parsed.missing[0]}`);
       }
+      if (parsed.intent === 'general_chat') {
+        console.log(`💬 General chat response prepared`);
+      }
 
       return parsed;
     } catch (error) {
@@ -189,6 +217,11 @@ class IntentClassifier {
     // Normalize time periods
     if (parsed.slots?.period) {
       parsed.slots.period = this.normalizePeriod(parsed.slots.period);
+    }
+
+    // For general_chat, ensure message slot is populated
+    if (parsed.intent === 'general_chat' && !parsed.slots?.message) {
+      parsed.slots = { ...(parsed.slots || {}), message: parsed.response || '' };
     }
 
     // Ensure required fields exist

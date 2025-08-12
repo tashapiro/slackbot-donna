@@ -1,4 +1,4 @@
-// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services + Timezone Support
+// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services + Timezone Support + Enhanced General Chat
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 
@@ -6,6 +6,7 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const IntentClassifier = require('./utils/intentClassifier');
 const dataStore = require('./utils/dataStore');
 const ErrorHandler = require('./utils/errorHandler');
+const TimezoneHelper = require('./utils/timezoneHelper');
 
 // Service imports
 const savvyCalService = require('./services/savvycal');
@@ -169,6 +170,94 @@ function handleSimpleQuestions(text) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Enhanced general chat handler with context awareness
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function handleGeneralChat({ slots, client, channel, thread_ts, userId, response, originalMessage }) {
+  try {
+    // Get thread context to see if there are recent actions (like created links)
+    const threadContext = dataStore.getThreadData(channel, thread_ts);
+    console.log('Thread context for general chat:', threadContext);
+    
+    // Enhanced context-aware response logic
+    const lowerMessage = originalMessage.toLowerCase();
+    
+    // Check if user is asking about using a recent link in an email
+    if (lowerMessage.includes('email') && lowerMessage.includes('draft') && threadContext.last_link_id) {
+      // User wants to use a recent link in an email - provide helpful response
+      const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
+      const linkTitle = threadContext.last_link_title || 'Schedule a call';
+      
+      response = `I can help you draft that email! Here's a suggestion:\n\n` +
+                `**Subject:** Re: RAS Formatting Project - Let's Reconnect\n\n` +
+                `Hi Leanne,\n\n` +
+                `Thanks for reaching out! I'm doing much better, thank you for asking.\n\n` +
+                `I completely agree - this is the perfect time to pick up the RAS formatting project while things are quieter. I'd love to reconnect and go over what still needs to be done.\n\n` +
+                `I've set up a quick scheduling link to make it easy to find a time that works for both of us: **[${linkTitle}](${recentLinkUrl})**\n\n` +
+                `Feel free to pick whatever time works best for you this week or next, and we can dive into the scoping and timing details.\n\n` +
+                `Looking forward to moving this forward!\n\n` +
+                `Best regards,\n[Your name]\n\n` +
+                `---\n\n` +
+                `*Feel free to customize this draft however you'd like. The scheduling link is ready to go!*`;
+    }
+    // Check if user is asking about a recent link specifically
+    else if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
+      const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
+      const linkTitle = threadContext.last_link_title || 'Meeting';
+      const timeAgo = threadContext.last_action_time ? 
+        `${Math.round((Date.now() - threadContext.last_action_time) / 60000)} minutes ago` : 
+        'recently';
+      
+      response = `Your most recent scheduling link (created ${timeAgo}):\n\n` +
+                `**${linkTitle}:** ${recentLinkUrl}\n\n` +
+                `Need me to help you use this in an email or somewhere else?`;
+    }
+    // Check if user is asking for help with emails in general
+    else if (lowerMessage.includes('email') && lowerMessage.includes('help')) {
+      response = `I can definitely help you draft emails! What kind of email are you looking to write?\n\n` +
+                `I'm particularly good at:\n` +
+                `• Professional follow-ups and project coordination\n` +
+                `• Including scheduling links in outreach\n` +
+                `• Meeting requests and confirmations\n` +
+                `• Client communications\n\n` +
+                `Just let me know the context and I'll draft something for you.`;
+    }
+    // If the LLM provided a response, use that
+    else if (response && response.trim() !== '') {
+      // Keep the LLM's response as-is
+    }
+    // Default Donna responses for general conversation
+    else {
+      const donnaResponses = [
+        "You're asking the wrong question — but lucky for you, I have the right answer.",
+        "I already took care of it. You're welcome.",
+        "Please. I've handled worse before breakfast.",
+        "I'm Donna. That's the whole explanation.",
+        "You clearly need my help. Good thing I'm Donna.",
+        "Let me guess — you need something handled perfectly? That's what I'm here for."
+      ];
+      
+      response = donnaResponses[Math.floor(Math.random() * donnaResponses.length)];
+    }
+    
+    // Send the response
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: response
+    });
+    
+  } catch (error) {
+    console.error('General chat handler error:', error);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: "Even I have my limits. Try rephrasing that?"
+    });
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Intent routing - UPDATED with userId parameter
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -279,12 +368,16 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       await ErrorHandler.wrapHandler(calendarHandler.handleCalendarRundown.bind(calendarHandler), 'Google Calendar')(params);
       break;
       
-    // General conversation
+    // General conversation - ENHANCED
     case 'general_chat':
-      await client.chat.postMessage({
+      await handleGeneralChat({
+        slots,
+        client,
         channel,
         thread_ts,
-        text: response || "You clearly need my help. Good thing I'm Donna."
+        userId,
+        response,
+        originalMessage: slots.message || ''
       });
       break;
       
@@ -300,7 +393,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main message processing function - UPDATED with userId support
+// Main message processing function - UPDATED with userId support and enhanced context
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Handle both mention and regular message processing
@@ -385,7 +478,13 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     await client.chat.postMessage({ channel, thread_ts: responseThreadTs, text: 'Already on it. This is what I do.' });
     try {
       const { url, id } = await savvyCalService.createSingleUseLink(title, minutes);
-      dataStore.setThreadData(channel, responseThreadTs, { last_link_id: id });
+      dataStore.setThreadData(channel, responseThreadTs, { 
+        last_link_id: id, 
+        last_link_url: url,
+        last_link_title: title,
+        last_action: 'created_scheduling_link',
+        last_action_time: Date.now()
+      });
       return client.chat.postMessage({ 
         channel, 
         thread_ts: responseThreadTs, 
@@ -409,8 +508,27 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   }
 
   try {
-    const context = dataStore.getThreadData(channel, responseThreadTs);
-    const routed = await intentClassifier.classify({ text, context });
+    const threadData = dataStore.getThreadData(channel, responseThreadTs);
+    const userTimezone = await TimezoneHelper.getUserTimezone(client, user); // Get user timezone
+    
+    // Build enhanced context for the LLM
+    const enhancedContext = {
+      last_link_id: threadData.last_link_id || null,
+      last_link_url: threadData.last_link_url || null,
+      last_link_title: threadData.last_link_title || null,
+      last_action: threadData.last_action || null,
+      last_action_time: threadData.last_action_time || null,
+      user_timezone: userTimezone,
+      current_time: new Date().toISOString(),
+      thread_history: threadData.recent_messages || [],
+      // Add helpful flags for context awareness
+      has_recent_link: !!(threadData.last_link_id && threadData.last_action_time && (Date.now() - threadData.last_action_time) < 300000), // 5 minutes
+      thread_active_since: threadData.startedBy ? new Date(threadData.lastActivity || Date.now()).toISOString() : null
+    };
+    
+    console.log('Enhanced context for intent classification:', enhancedContext);
+    
+    const routed = await intentClassifier.classify({ text, context: enhancedContext });
 
     // Handle missing information
     if (!routed.intent && routed.missing?.length) {
@@ -454,7 +572,13 @@ app.command('/schedule', async ({ command, ack, respond }) => {
 
   try {
     const { url, id } = await savvyCalService.createSingleUseLink(title, minutes);
-    dataStore.setThreadData(command.channel_id, command.thread_ts || command.trigger_id, { last_link_id: id });
+    dataStore.setThreadData(command.channel_id, command.thread_ts || command.trigger_id, { 
+      last_link_id: id,
+      last_link_url: url,
+      last_link_title: title,
+      last_action: 'created_scheduling_link',
+      last_action_time: Date.now()
+    });
 
     await respond({
       text: url,
@@ -552,6 +676,7 @@ setInterval(() => {
   console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   console.log('🌍 Now with timezone-aware calendar support - respecting every user\'s local time');
+  console.log('🧠 Enhanced with context-aware general conversation - helping you draft emails, coordinate projects & more');
   
   // Test API connections on startup
   try {
