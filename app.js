@@ -174,213 +174,400 @@ function handleSimpleQuestions(text) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleGeneralChat({ slots, client, channel, thread_ts, userId, response, originalMessage }) {
-  try {
-    // Get thread context to see if there are recent actions (like created links)
-    const threadContext = dataStore.getThreadData(channel, thread_ts);
-    console.log('Thread context for general chat:', threadContext);
-    console.log('LLM provided response:', response);
-    
-    // If the LLM provided a substantive response, use it (it should be context-aware)
-    if (response && response.trim() !== '' && response !== "You clearly need my help. Good thing I'm Donna.") {
-      console.log('Using LLM-generated response');
+    try {
+      // Get thread context to see if there are recent actions (like created links)
+      const threadContext = dataStore.getThreadData(channel, thread_ts);
+      console.log('Thread context for general chat:', threadContext);
+      console.log('LLM provided response:', response);
+      
+      // Check if this is an email drafting request
+      const lowerMessage = originalMessage.toLowerCase();
+      const isEmailRequest = lowerMessage.includes('draft') || lowerMessage.includes('write') || 
+                            (lowerMessage.includes('email') && (lowerMessage.includes('to') || lowerMessage.includes('for')));
+      
+      if (isEmailRequest) {
+        // Extract email details from slots or message
+        const recipientName = slots.email_recipient || extractRecipientName(originalMessage);
+        const topic = slots.email_topic || extractEmailTopic(originalMessage);
+        
+        // Generate modern, professional email
+        const emailDraft = generateModernEmail({
+          recipient: recipientName,
+          topic: topic,
+          originalMessage,
+          recentLink: threadContext.last_link_url ? {
+            url: threadContext.last_link_url,
+            title: threadContext.last_link_title || 'Meeting'
+          } : null
+        });
+        
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: emailDraft
+        });
+        return;
+      }
+      
+      // If the LLM provided a substantive response, use it (it should be context-aware)
+      if (response && response.trim() !== '' && response !== "You clearly need my help. Good thing I'm Donna.") {
+        console.log('Using LLM-generated response');
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: response
+        });
+        return;
+      }
+      
+      // Fallback context-aware responses when LLM doesn't provide specific content
+      
+      // Check if user is asking about a recent link specifically
+      if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
+        const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
+        const linkTitle = threadContext.last_link_title || 'Meeting';
+        const timeAgo = threadContext.last_action_time ? 
+          `${Math.round((Date.now() - threadContext.last_action_time) / 60000)} minutes ago` : 
+          'recently';
+        
+        response = `Your most recent scheduling link (created ${timeAgo}):\n\n` +
+                  `**${linkTitle}:** ${recentLinkUrl}\n\n` +
+                  `Need me to help you use this in an email or somewhere else?`;
+      }
+      // Check if user is asking for help with emails in general
+      else if (lowerMessage.includes('email') && lowerMessage.includes('help')) {
+        response = `I can definitely help you draft emails! What kind of email are you looking to write?\n\n` +
+                  `I'm particularly good at:\n` +
+                  `• Professional follow-ups and project coordination\n` +
+                  `• Including scheduling links in outreach\n` +
+                  `• Meeting requests and confirmations\n` +
+                  `• Client communications\n\n` +
+                  `Just let me know the context and I'll draft something for you.`;
+      }
+      // Default Donna responses for general conversation
+      else {
+        const donnaResponses = [
+          "You're asking the wrong question — but lucky for you, I have the right answer.",
+          "I already took care of it. You're welcome.",
+          "Please. I've handled worse before breakfast.",
+          "I'm Donna. That's the whole explanation.",
+          "You clearly need my help. Good thing I'm Donna.",
+          "Let me guess — you need something handled perfectly? That's what I'm here for."
+        ];
+        
+        response = donnaResponses[Math.floor(Math.random() * donnaResponses.length)];
+      }
+      
+      // Send the response
       await client.chat.postMessage({
         channel,
         thread_ts,
         text: response
       });
-      return;
-    }
-    
-    // Fallback context-aware responses when LLM doesn't provide specific content
-    const lowerMessage = originalMessage.toLowerCase();
-    
-    // Check if user is asking about a recent link specifically
-    if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
-      const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
-      const linkTitle = threadContext.last_link_title || 'Meeting';
-      const timeAgo = threadContext.last_action_time ? 
-        `${Math.round((Date.now() - threadContext.last_action_time) / 60000)} minutes ago` : 
-        'recently';
       
-      response = `Your most recent scheduling link (created ${timeAgo}):\n\n` +
-                `**${linkTitle}:** ${recentLinkUrl}\n\n` +
-                `Need me to help you use this in an email or somewhere else?`;
+    } catch (error) {
+      console.error('General chat handler error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: "Even I have my limits. Try rephrasing that?"
+      });
     }
-    // Check if user is asking for help with emails in general
-    else if (lowerMessage.includes('email') && lowerMessage.includes('help')) {
-      response = `I can definitely help you draft emails! What kind of email are you looking to write?\n\n` +
-                `I'm particularly good at:\n` +
-                `• Professional follow-ups and project coordination\n` +
-                `• Including scheduling links in outreach\n` +
-                `• Meeting requests and confirmations\n` +
-                `• Client communications\n\n` +
-                `Just let me know the context and I'll draft something for you.`;
-    }
-    // Default Donna responses for general conversation
-    else {
-      const donnaResponses = [
-        "You're asking the wrong question — but lucky for you, I have the right answer.",
-        "I already took care of it. You're welcome.",
-        "Please. I've handled worse before breakfast.",
-        "I'm Donna. That's the whole explanation.",
-        "You clearly need my help. Good thing I'm Donna.",
-        "Let me guess — you need something handled perfectly? That's what I'm here for."
-      ];
-      
-      response = donnaResponses[Math.floor(Math.random() * donnaResponses.length)];
-    }
-    
-    // Send the response
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: response
-    });
-    
-  } catch (error) {
-    console.error('General chat handler error:', error);
-    await client.chat.postMessage({
-      channel,
-      thread_ts,
-      text: "Even I have my limits. Try rephrasing that?"
-    });
   }
-}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Modern email generation helper
+// ─────────────────────────────────────────────────────────────────────────────
+
+function generateModernEmail({ recipient, topic, originalMessage, recentLink }) {
+    // Extract purpose/context from original message
+    const lowerMsg = originalMessage.toLowerCase();
+    
+    // Generate subject line based on context
+    let subject = '';
+    if (topic) {
+      subject = `Re: ${topic}`;
+    } else if (recentLink) {
+      subject = `Connecting about ${recentLink.title.replace(/\b(call|meeting|with)\b/gi, '').trim()}`;
+    } else {
+      subject = 'Quick connect';
+    }
+    
+    // Generate opening based on context
+    let opening = `Hi${recipient ? ` ${recipient}` : ''},`;
+    
+    // Generate body based on message content and context
+    let body = '';
+    
+    if (lowerMsg.includes('discovery') || lowerMsg.includes('learn how i can help')) {
+      body = `I'd love to connect with you about how I can help${topic ? ` with ${topic}` : ''}. `;
+    } else if (lowerMsg.includes('follow up') || lowerMsg.includes('followup')) {
+      body = `Following up on our conversation${topic ? ` about ${topic}` : ''}. `;
+    } else if (lowerMsg.includes('meeting') || lowerMsg.includes('connect')) {
+      body = `I'd like to schedule some time to connect${topic ? ` about ${topic}` : ''}. `;
+    } else {
+      body = `I wanted to reach out${topic ? ` about ${topic}` : ''}. `;
+    }
+    
+    // Add scheduling link if available
+    if (recentLink) {
+      if (lowerMsg.includes('this week')) {
+        body += `Here's a link to grab time that works for you this week:\n\n${recentLink.url}`;
+      } else {
+        body += `I've set up a quick booking link to make scheduling easy:\n\n${recentLink.url}`;
+      }
+    }
+    
+    // Add context-specific closing
+    let closing = '';
+    if (lowerMsg.includes('look forward') || lowerMsg.includes('looking forward')) {
+      closing = '\n\nLooking forward to connecting';
+      if (lowerMsg.includes('this week')) {
+        closing += ' this week';
+      }
+      closing += '.';
+    } else if (recentLink) {
+      closing = '\n\nTalk soon.';
+    } else {
+      closing = '\n\nLet me know what works best for you.';
+    }
+    
+    // Construct final email
+    const email = `I'll draft that email for you:\n\n` +
+                 `**Subject:** ${subject}\n\n` +
+                 `${opening}\n\n` +
+                 `${body}${closing}\n\n` +
+                 `[Your name]`;
+    
+    return email;
+  }
+
+
+  // Helper functions for email extraction
+function extractRecipientName(message) {
+    // Look for patterns like "email to John", "draft an email to Maura"
+    const patterns = [
+      /(?:email|write|draft).*?to\s+([A-Z][a-z]+)/i,
+      /to\s+([A-Z][a-z]+)(?:\s|,|$)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) return match[1];
+    }
+    return null;
+  }
+  
+  function extractEmailTopic(message) {
+    // Look for patterns like "about X", "regarding Y"
+    const patterns = [
+      /about\s+([^,\n]+)/i,
+      /regarding\s+([^,\n]+)/i,
+      /for\s+([^,\n]+)/i
+    ];
+    
+    for (const pattern of patterns) {
+      const match = message.match(pattern);
+      if (match) return match[1].trim();
+    }
+    return null;
+  }
+
+  async function handleMultiStep({ slots, client, channel, thread_ts, userId }) {
+    try {
+      const steps = slots.steps || [];
+      
+      if (steps.length === 0) {
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: "I see you want multiple things done, but I need you to break it down for me. What's the first thing you need?"
+        });
+        return;
+      }
+  
+      // Execute the first step
+      const firstStep = steps[0];
+      const remainingSteps = steps.slice(1);
+      
+      // Store remaining steps in thread context for follow-up
+      dataStore.setThreadData(channel, thread_ts, {
+        pending_steps: remainingSteps,
+        multi_step_in_progress: true
+      });
+      
+      // Send instruction message
+      let instruction = `I'll handle this step by step. First, let me ${getStepDescription(firstStep.intent)}.`;
+      if (remainingSteps.length > 0) {
+        const nextActions = remainingSteps.map(step => getStepDescription(step.intent));
+        instruction += ` After that, ask me to ${nextActions.join(' and ')}.`;
+      }
+      
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: instruction
+      });
+      
+      // Execute the first step
+      await handleIntent(firstStep.intent, firstStep.slots, client, channel, thread_ts, '', userId);
+      
+    } catch (error) {
+      console.error('Multi-step handler error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: "Even I can't do everything at once. Let's tackle this one step at a time."
+      });
+    }
+  }
+  
+  function getStepDescription(intent) {
+    const descriptions = {
+      'schedule_oneoff': 'create your scheduling link',
+      'general_chat': 'draft that email',
+      'create_meeting': 'set up your meeting',
+      'block_time': 'block time on your calendar',
+      'create_task': 'create that task',
+      'list_tasks': 'show your tasks',
+      'check_calendar': 'check your calendar'
+    };
+    return descriptions[intent] || `handle your ${intent} request`;
+  }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Intent routing - UPDATED with userId parameter
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleIntent(intent, slots, client, channel, thread_ts, response = '', userId, originalText = '') {
-  const params = { slots, client, channel, thread_ts, userId }; // ADDED userId
+    const params = { slots, client, channel, thread_ts, userId };
+    
+    switch (intent) {
+      // NEW: Multi-step handling
+      case 'multi_step':
+        await handleMultiStep(params);
+        break;
+        
+      // SavvyCal/Scheduling intents
+      case 'schedule_oneoff':
+        await ErrorHandler.wrapHandler(schedulingHandler.handleCreateSchedulingLink.bind(schedulingHandler), 'SavvyCal')(params);
+        break;
+        
+      case 'disable_link':
+        await ErrorHandler.wrapHandler(schedulingHandler.handleDisableLink.bind(schedulingHandler), 'SavvyCal')(params);
+        break;
   
-  switch (intent) {
-    // SavvyCal/Scheduling intents
-    case 'schedule_oneoff':
-      await ErrorHandler.wrapHandler(schedulingHandler.handleCreateSchedulingLink.bind(schedulingHandler), 'SavvyCal')(params);
-      break;
-      
-    case 'disable_link':
-      await ErrorHandler.wrapHandler(schedulingHandler.handleDisableLink.bind(schedulingHandler), 'SavvyCal')(params);
-      break;
-
-    case 'list_links':
-      await ErrorHandler.wrapHandler(schedulingHandler.handleListLinks.bind(schedulingHandler), 'SavvyCal')(params);
-      break;
-
-    case 'get_link':
-      await ErrorHandler.wrapHandler(schedulingHandler.handleGetLink.bind(schedulingHandler), 'SavvyCal')(params);
-      break;
-
-    case 'delete_link':
-      await ErrorHandler.wrapHandler(schedulingHandler.handleDeleteLink.bind(schedulingHandler), 'SavvyCal')(params);
-      break;
-      
-    // Time tracking intents
-    case 'log_time':
-      await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeLog.bind(timeTrackingHandler), 'Toggl')(params);
-      break;
-      
-    case 'query_time':
-      await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeQuery.bind(timeTrackingHandler), 'Toggl')(params);
-      break;
-      
-    // Project management intents
-    case 'list_tasks':
-      await ErrorHandler.wrapHandler(projectHandler.handleListTasks.bind(projectHandler), 'Asana')(params);
-      break;
-      
-    case 'list_projects':
-      await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')(params);
-      break;
-      
-    case 'debug_tasks':
-      await ErrorHandler.wrapHandler(projectHandler.handleDebugTasks.bind(projectHandler), 'Asana')(params);
-      break;
-      
-    case 'update_task':
-      await ErrorHandler.wrapHandler(projectHandler.handleUpdateTask.bind(projectHandler), 'Asana')(params);
-      break;
-      
-    case 'create_task':
-      await ErrorHandler.wrapHandler(projectHandler.handleCreateTask.bind(projectHandler), 'Asana')(params);
-      break;
-      
-    case 'complete_task':
-      // Handle as a specific case of update_task
-      await ErrorHandler.wrapHandler(async (params) => {
-        const { slots } = params;
-        const updateParams = {
-          ...params,
-          slots: { ...slots, field: 'completed', value: 'true' }
-        };
-        await projectHandler.handleUpdateTask(updateParams);
-      }, 'Asana')(params);
-      break;
-      
-    case 'daily_rundown':
-      await ErrorHandler.wrapHandler(async ({ client, channel, thread_ts, userId }) => {
-        const rundown = await projectHandler.generateDailyRundown();
+      case 'list_links':
+        await ErrorHandler.wrapHandler(schedulingHandler.handleListLinks.bind(schedulingHandler), 'SavvyCal')(params);
+        break;
+  
+      case 'get_link':
+        await ErrorHandler.wrapHandler(schedulingHandler.handleGetLink.bind(schedulingHandler), 'SavvyCal')(params);
+        break;
+  
+      case 'delete_link':
+        await ErrorHandler.wrapHandler(schedulingHandler.handleDeleteLink.bind(schedulingHandler), 'SavvyCal')(params);
+        break;
+        
+      // Time tracking intents
+      case 'log_time':
+        await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeLog.bind(timeTrackingHandler), 'Toggl')(params);
+        break;
+        
+      case 'query_time':
+        await ErrorHandler.wrapHandler(timeTrackingHandler.handleTimeQuery.bind(timeTrackingHandler), 'Toggl')(params);
+        break;
+        
+      // Project management intents
+      case 'list_tasks':
+        await ErrorHandler.wrapHandler(projectHandler.handleListTasks.bind(projectHandler), 'Asana')(params);
+        break;
+        
+      case 'list_projects':
+        await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')(params);
+        break;
+        
+      case 'update_task':
+        await ErrorHandler.wrapHandler(projectHandler.handleUpdateTask.bind(projectHandler), 'Asana')(params);
+        break;
+        
+      case 'create_task':
+        await ErrorHandler.wrapHandler(projectHandler.handleCreateTask.bind(projectHandler), 'Asana')(params);
+        break;
+        
+      case 'complete_task':
+        await ErrorHandler.wrapHandler(async (params) => {
+          const { slots } = params;
+          const updateParams = {
+            ...params,
+            slots: { ...slots, field: 'completed', value: 'true' }
+          };
+          await projectHandler.handleUpdateTask(updateParams);
+        }, 'Asana')(params);
+        break;
+        
+      case 'daily_rundown':
+        await ErrorHandler.wrapHandler(async ({ client, channel, thread_ts, userId }) => {
+          const rundown = await projectHandler.generateDailyRundown();
+          await client.chat.postMessage({
+            channel,
+            thread_ts,
+            text: rundown
+          });
+        }, 'Asana')(params);
+        break;
+        
+      // Calendar intents
+      case 'check_calendar':
+        await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+        
+      case 'create_meeting':
+        await ErrorHandler.wrapHandler(calendarHandler.handleCreateMeeting.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+  
+      case 'block_time':
+        await ErrorHandler.wrapHandler(calendarHandler.handleBlockTime.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+        
+      case 'update_meeting':
+        await ErrorHandler.wrapHandler(calendarHandler.handleUpdateMeeting.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+        
+      case 'delete_meeting':
+        await ErrorHandler.wrapHandler(calendarHandler.handleDeleteMeeting.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+        
+      case 'next_meeting':
+        await ErrorHandler.wrapHandler(calendarHandler.handleNextMeeting.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+        
+      case 'calendar_rundown':
+        await ErrorHandler.wrapHandler(calendarHandler.handleCalendarRundown.bind(calendarHandler), 'Google Calendar')(params);
+        break;
+        
+      // General conversation - ENHANCED with modern email generation
+      case 'general_chat':
+        await handleGeneralChat({
+          slots,
+          client,
+          channel,
+          thread_ts,
+          userId,
+          response,
+          originalMessage: originalText
+        });
+        break;
+        
+      default:
+        const openingLine = getRandomOpeningLine();
         await client.chat.postMessage({
           channel,
           thread_ts,
-          text: rundown
+          text: `${openingLine}\n\nI handle scheduling, time tracking, task management, calendar management, and pretty much everything else.`
         });
-      }, 'Asana')(params);
-      break;
-      
-    // Calendar intents - NOW WITH TIMEZONE SUPPORT
-    case 'check_calendar':
-      await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-      
-    case 'create_meeting':
-      await ErrorHandler.wrapHandler(calendarHandler.handleCreateMeeting.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-
-    case 'block_time':
-      await ErrorHandler.wrapHandler(calendarHandler.handleBlockTime.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-      
-    case 'update_meeting':
-      await ErrorHandler.wrapHandler(calendarHandler.handleUpdateMeeting.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-      
-    case 'delete_meeting':
-      await ErrorHandler.wrapHandler(calendarHandler.handleDeleteMeeting.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-      
-    case 'next_meeting':
-      await ErrorHandler.wrapHandler(calendarHandler.handleNextMeeting.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-      
-    case 'calendar_rundown':
-      await ErrorHandler.wrapHandler(calendarHandler.handleCalendarRundown.bind(calendarHandler), 'Google Calendar')(params);
-      break;
-      
-    // General conversation - ENHANCED
-    case 'general_chat':
-      await handleGeneralChat({
-        slots,
-        client,
-        channel,
-        thread_ts,
-        userId,
-        response,
-        originalMessage: originalText
-      });
-      break;
-      
-    default:
-      // Use a random opening line for unknown requests
-      const openingLine = getRandomOpeningLine();
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: `${openingLine}\n\nI handle scheduling, time tracking, task management, calendar management, and pretty much everything else.`
-      });
+    }
   }
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main message processing function - UPDATED with userId support and enhanced context
