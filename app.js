@@ -1,4 +1,4 @@
-// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services + Timezone Support + Enhanced General Chat
+// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services + Timezone Support + Smart Email Generation
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 
@@ -170,270 +170,278 @@ function handleSimpleQuestions(text) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Enhanced general chat handler with context awareness
+// Smart Email Generation - Let LLM do the intelligent work
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function generateSmartEmail({ slots, originalMessage, threadContext }) {
+  const { 
+    email_recipient, 
+    email_title, 
+    email_purpose, 
+    email_timing, 
+    email_topic,
+    include_scheduling_link 
+  } = slots;
+
+  console.log('Generating smart email with slots:', slots);
+  
+  // Build context for email generation
+  const recipient = email_recipient || 'there';
+  const recipientTitle = email_title ? ` (${email_title})` : '';
+  const timing = email_timing || '';
+  const topic = email_topic || '';
+  const purpose = email_purpose || 'connect';
+  
+  // Check for recent scheduling link
+  const recentLink = threadContext.last_link_url && (include_scheduling_link || originalMessage.toLowerCase().includes('link'));
+  const linkUrl = recentLink ? threadContext.last_link_url : null;
+  const linkTitle = threadContext.last_link_title || 'meeting';
+
+  // Generate subject line intelligently
+  let subject = '';
+  if (purpose === 'meeting_request' || originalMessage.toLowerCase().includes('connect')) {
+    if (topic) {
+      subject = `Connecting about ${topic}`;
+    } else if (timing) {
+      subject = `Quick connect ${timing}`;
+    } else {
+      subject = 'Quick connect';
+    }
+  } else if (purpose === 'follow_up') {
+    subject = topic ? `Following up on ${topic}` : 'Following up';
+  } else if (topic) {
+    subject = `Re: ${topic}`;
+  } else {
+    subject = 'Quick connect';
+  }
+
+  // Generate greeting
+  const greeting = recipient !== 'there' ? `Hi ${recipient},` : 'Hi there,';
+
+  // Generate body based on context and purpose
+  let body = '';
+  
+  if (purpose === 'meeting_request' || originalMessage.toLowerCase().includes('connect')) {
+    if (topic && topic.includes('help')) {
+      body = `I'd love to connect with you about ${topic}.`;
+    } else if (topic) {
+      body = `I'd like to schedule some time to discuss ${topic}.`;
+    } else {
+      body = `I'd love to connect with you${timing ? ` ${timing}` : ''}.`;
+    }
+  } else if (purpose === 'follow_up') {
+    body = `Following up on our previous conversation${topic ? ` about ${topic}` : ''}.`;
+  } else {
+    // General case - extract intent from original message
+    if (originalMessage.toLowerCase().includes('learn how i can help')) {
+      body = `I'd love to connect with you to learn how I can help.`;
+    } else if (originalMessage.toLowerCase().includes('follow up')) {
+      body = `Following up${topic ? ` on ${topic}` : ''}.`;
+    } else {
+      body = `I wanted to reach out${topic ? ` about ${topic}` : ''}.`;
+    }
+  }
+
+  // Add scheduling link if available and relevant
+  if (linkUrl) {
+    if (timing && timing.includes('week')) {
+      body += ` Here's a link to grab time that works for you this week:\n\n${linkUrl}`;
+    } else {
+      body += ` I've set up an easy booking link to make scheduling simple:\n\n${linkUrl}`;
+    }
+  } else if (purpose === 'meeting_request' || originalMessage.toLowerCase().includes('connect')) {
+    body += ' Let me know what works best for you.';
+  }
+
+  // Add appropriate closing
+  let closing = '';
+  if (timing && timing.includes('week')) {
+    closing = '\n\nLooking forward to connecting this week.';
+  } else if (linkUrl) {
+    closing = '\n\nTalk soon.';
+  } else {
+    closing = '\n\nBest regards.';
+  }
+
+  // Construct final email
+  return `Here's your email to ${recipient}${recipientTitle}:\n\n` +
+         `**Subject:** ${subject}\n\n` +
+         `${greeting}\n\n` +
+         `${body}${closing}\n\n` +
+         `[Your name]`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Enhanced general chat handler with smart email generation
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function handleGeneralChat({ slots, client, channel, thread_ts, userId, response, originalMessage }) {
-    try {
-      // Get thread context to see if there are recent actions (like created links)
-      const threadContext = dataStore.getThreadData(channel, thread_ts);
-      console.log('Thread context for general chat:', threadContext);
-      console.log('LLM provided response:', response);
+  try {
+    // Get thread context to see if there are recent actions (like created links)
+    const threadContext = dataStore.getThreadData(channel, thread_ts);
+    console.log('Thread context for general chat:', threadContext);
+    console.log('LLM provided response:', response);
+    console.log('Email-related slots:', {
+      email_recipient: slots.email_recipient,
+      email_purpose: slots.email_purpose,
+      include_scheduling_link: slots.include_scheduling_link
+    });
+    
+    // Check if this is an email drafting request (either explicit or has email recipient)
+    const lowerMessage = originalMessage.toLowerCase();
+    const isEmailRequest = slots.email_recipient || 
+                          lowerMessage.includes('draft') || 
+                          lowerMessage.includes('write') || 
+                          (lowerMessage.includes('email') && (lowerMessage.includes('to') || lowerMessage.includes('for')));
+    
+    if (isEmailRequest && slots.email_recipient) {
+      console.log('Processing smart email generation');
+      // Generate smart email using LLM-extracted details
+      const emailDraft = await generateSmartEmail({
+        slots,
+        originalMessage,
+        threadContext
+      });
       
-      // Check if this is an email drafting request
-      const lowerMessage = originalMessage.toLowerCase();
-      const isEmailRequest = lowerMessage.includes('draft') || lowerMessage.includes('write') || 
-                            (lowerMessage.includes('email') && (lowerMessage.includes('to') || lowerMessage.includes('for')));
-      
-      if (isEmailRequest) {
-        // Extract email details from slots or message
-        const recipientName = slots.email_recipient || extractRecipientName(originalMessage);
-        const topic = slots.email_topic || extractEmailTopic(originalMessage);
-        
-        // Generate modern, professional email
-        const emailDraft = generateModernEmail({
-          recipient: recipientName,
-          topic: topic,
-          originalMessage,
-          recentLink: threadContext.last_link_url ? {
-            url: threadContext.last_link_url,
-            title: threadContext.last_link_title || 'Meeting'
-          } : null
-        });
-        
-        await client.chat.postMessage({
-          channel,
-          thread_ts,
-          text: emailDraft
-        });
-        return;
-      }
-      
-      // If the LLM provided a substantive response, use it (it should be context-aware)
-      if (response && response.trim() !== '' && response !== "You clearly need my help. Good thing I'm Donna.") {
-        console.log('Using LLM-generated response');
-        await client.chat.postMessage({
-          channel,
-          thread_ts,
-          text: response
-        });
-        return;
-      }
-      
-      // Fallback context-aware responses when LLM doesn't provide specific content
-      
-      // Check if user is asking about a recent link specifically
-      if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
-        const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
-        const linkTitle = threadContext.last_link_title || 'Meeting';
-        const timeAgo = threadContext.last_action_time ? 
-          `${Math.round((Date.now() - threadContext.last_action_time) / 60000)} minutes ago` : 
-          'recently';
-        
-        response = `Your most recent scheduling link (created ${timeAgo}):\n\n` +
-                  `**${linkTitle}:** ${recentLinkUrl}\n\n` +
-                  `Need me to help you use this in an email or somewhere else?`;
-      }
-      // Check if user is asking for help with emails in general
-      else if (lowerMessage.includes('email') && lowerMessage.includes('help')) {
-        response = `I can definitely help you draft emails! What kind of email are you looking to write?\n\n` +
-                  `I'm particularly good at:\n` +
-                  `• Professional follow-ups and project coordination\n` +
-                  `• Including scheduling links in outreach\n` +
-                  `• Meeting requests and confirmations\n` +
-                  `• Client communications\n\n` +
-                  `Just let me know the context and I'll draft something for you.`;
-      }
-      // Default Donna responses for general conversation
-      else {
-        const donnaResponses = [
-          "You're asking the wrong question — but lucky for you, I have the right answer.",
-          "I already took care of it. You're welcome.",
-          "Please. I've handled worse before breakfast.",
-          "I'm Donna. That's the whole explanation.",
-          "You clearly need my help. Good thing I'm Donna.",
-          "Let me guess — you need something handled perfectly? That's what I'm here for."
-        ];
-        
-        response = donnaResponses[Math.floor(Math.random() * donnaResponses.length)];
-      }
-      
-      // Send the response
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: emailDraft
+      });
+      return;
+    }
+    
+    // If the LLM provided a substantive response, use it (it should be context-aware)
+    if (response && response.trim() !== '' && response !== "You clearly need my help. Good thing I'm Donna.") {
+      console.log('Using LLM-generated response');
       await client.chat.postMessage({
         channel,
         thread_ts,
         text: response
       });
+      return;
+    }
+    
+    // Context-aware responses when LLM doesn't provide specific content
+    
+    // Check if user is asking about a recent link specifically
+    if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
+      const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
+      const linkTitle = threadContext.last_link_title || 'Meeting';
+      const timeAgo = threadContext.last_action_time ? 
+        `${Math.round((Date.now() - threadContext.last_action_time) / 60000)} minutes ago` : 
+        'recently';
       
-    } catch (error) {
-      console.error('General chat handler error:', error);
+      response = `Your most recent scheduling link (created ${timeAgo}):\n\n` +
+                `**${linkTitle}:** ${recentLinkUrl}\n\n` +
+                `Need me to help you use this in an email or somewhere else?`;
+    }
+    // Check if user is asking for help with emails in general
+    else if (lowerMessage.includes('email') && lowerMessage.includes('help')) {
+      response = `I can definitely help you draft emails! What kind of email are you looking to write?\n\n` +
+                `I'm particularly good at:\n` +
+                `• Professional follow-ups and project coordination\n` +
+                `• Including scheduling links in outreach\n` +
+                `• Meeting requests and confirmations\n` +
+                `• Client communications\n\n` +
+                `Just tell me who you're writing to and what you want to accomplish.`;
+    }
+    // Check if this is actually an email request but missing recipient
+    else if (isEmailRequest && !slots.email_recipient) {
+      response = `I can draft that email for you. Who are you writing to?`;
+    }
+    // Default Donna responses for general conversation
+    else {
+      const donnaResponses = [
+        "You're asking the wrong question — but lucky for you, I have the right answer.",
+        "I already took care of it. You're welcome.",
+        "Please. I've handled worse before breakfast.",
+        "I'm Donna. That's the whole explanation.",
+        "You clearly need my help. Good thing I'm Donna.",
+        "Let me guess — you need something handled perfectly? That's what I'm here for."
+      ];
+      
+      response = donnaResponses[Math.floor(Math.random() * donnaResponses.length)];
+    }
+    
+    // Send the response
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: response
+    });
+    
+  } catch (error) {
+    console.error('General chat handler error:', error);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: "Even I have my limits. Try rephrasing that?"
+    });
+  }
+}
+
+async function handleMultiStep({ slots, client, channel, thread_ts, userId }) {
+  try {
+    const steps = slots.steps || [];
+    
+    if (steps.length === 0) {
       await client.chat.postMessage({
         channel,
         thread_ts,
-        text: "Even I have my limits. Try rephrasing that?"
+        text: "I see you want multiple things done, but I need you to break it down for me. What's the first thing you need?"
       });
+      return;
     }
-  }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Modern email generation helper
-// ─────────────────────────────────────────────────────────────────────────────
+    // Execute the first step
+    const firstStep = steps[0];
+    const remainingSteps = steps.slice(1);
+    
+    // Store remaining steps in thread context for follow-up
+    dataStore.setThreadData(channel, thread_ts, {
+      pending_steps: remainingSteps,
+      multi_step_in_progress: true
+    });
+    
+    // Send instruction message
+    let instruction = `I'll handle this step by step. First, let me ${getStepDescription(firstStep.intent)}.`;
+    if (remainingSteps.length > 0) {
+      const nextActions = remainingSteps.map(step => getStepDescription(step.intent));
+      instruction += ` After that, ask me to ${nextActions.join(' and ')}.`;
+    }
+    
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: instruction
+    });
+    
+    // Execute the first step
+    await handleIntent(firstStep.intent, firstStep.slots, client, channel, thread_ts, '', userId);
+    
+  } catch (error) {
+    console.error('Multi-step handler error:', error);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: "Even I can't do everything at once. Let's tackle this one step at a time."
+    });
+  }
+}
 
-function generateModernEmail({ recipient, topic, originalMessage, recentLink }) {
-    // Extract purpose/context from original message
-    const lowerMsg = originalMessage.toLowerCase();
-    
-    // Generate subject line based on context
-    let subject = '';
-    if (topic) {
-      subject = `Re: ${topic}`;
-    } else if (recentLink) {
-      subject = `Connecting about ${recentLink.title.replace(/\b(call|meeting|with)\b/gi, '').trim()}`;
-    } else {
-      subject = 'Quick connect';
-    }
-    
-    // Generate opening based on context
-    let opening = `Hi${recipient ? ` ${recipient}` : ''},`;
-    
-    // Generate body based on message content and context
-    let body = '';
-    
-    if (lowerMsg.includes('discovery') || lowerMsg.includes('learn how i can help')) {
-      body = `I'd love to connect with you about how I can help${topic ? ` with ${topic}` : ''}. `;
-    } else if (lowerMsg.includes('follow up') || lowerMsg.includes('followup')) {
-      body = `Following up on our conversation${topic ? ` about ${topic}` : ''}. `;
-    } else if (lowerMsg.includes('meeting') || lowerMsg.includes('connect')) {
-      body = `I'd like to schedule some time to connect${topic ? ` about ${topic}` : ''}. `;
-    } else {
-      body = `I wanted to reach out${topic ? ` about ${topic}` : ''}. `;
-    }
-    
-    // Add scheduling link if available
-    if (recentLink) {
-      if (lowerMsg.includes('this week')) {
-        body += `Here's a link to grab time that works for you this week:\n\n${recentLink.url}`;
-      } else {
-        body += `I've set up a quick booking link to make scheduling easy:\n\n${recentLink.url}`;
-      }
-    }
-    
-    // Add context-specific closing
-    let closing = '';
-    if (lowerMsg.includes('look forward') || lowerMsg.includes('looking forward')) {
-      closing = '\n\nLooking forward to connecting';
-      if (lowerMsg.includes('this week')) {
-        closing += ' this week';
-      }
-      closing += '.';
-    } else if (recentLink) {
-      closing = '\n\nTalk soon.';
-    } else {
-      closing = '\n\nLet me know what works best for you.';
-    }
-    
-    // Construct final email
-    const email = `I'll draft that email for you:\n\n` +
-                 `**Subject:** ${subject}\n\n` +
-                 `${opening}\n\n` +
-                 `${body}${closing}\n\n` +
-                 `[Your name]`;
-    
-    return email;
-  }
-
-
-  // Helper functions for email extraction
-function extractRecipientName(message) {
-    // Look for patterns like "email to John", "draft an email to Maura"
-    const patterns = [
-      /(?:email|write|draft).*?to\s+([A-Z][a-z]+)/i,
-      /to\s+([A-Z][a-z]+)(?:\s|,|$)/i
-    ];
-    
-    for (const pattern of patterns) {
-      const match = message.match(pattern);
-      if (match) return match[1];
-    }
-    return null;
-  }
-  
-  function extractEmailTopic(message) {
-    // Look for patterns like "about X", "regarding Y"
-    const patterns = [
-      /about\s+([^,\n]+)/i,
-      /regarding\s+([^,\n]+)/i,
-      /for\s+([^,\n]+)/i
-    ];
-    
-    for (const pattern of patterns) {
-      const match = message.match(pattern);
-      if (match) return match[1].trim();
-    }
-    return null;
-  }
-
-  async function handleMultiStep({ slots, client, channel, thread_ts, userId }) {
-    try {
-      const steps = slots.steps || [];
-      
-      if (steps.length === 0) {
-        await client.chat.postMessage({
-          channel,
-          thread_ts,
-          text: "I see you want multiple things done, but I need you to break it down for me. What's the first thing you need?"
-        });
-        return;
-      }
-  
-      // Execute the first step
-      const firstStep = steps[0];
-      const remainingSteps = steps.slice(1);
-      
-      // Store remaining steps in thread context for follow-up
-      dataStore.setThreadData(channel, thread_ts, {
-        pending_steps: remainingSteps,
-        multi_step_in_progress: true
-      });
-      
-      // Send instruction message
-      let instruction = `I'll handle this step by step. First, let me ${getStepDescription(firstStep.intent)}.`;
-      if (remainingSteps.length > 0) {
-        const nextActions = remainingSteps.map(step => getStepDescription(step.intent));
-        instruction += ` After that, ask me to ${nextActions.join(' and ')}.`;
-      }
-      
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: instruction
-      });
-      
-      // Execute the first step
-      await handleIntent(firstStep.intent, firstStep.slots, client, channel, thread_ts, '', userId);
-      
-    } catch (error) {
-      console.error('Multi-step handler error:', error);
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: "Even I can't do everything at once. Let's tackle this one step at a time."
-      });
-    }
-  }
-  
-  function getStepDescription(intent) {
-    const descriptions = {
-      'schedule_oneoff': 'create your scheduling link',
-      'general_chat': 'draft that email',
-      'create_meeting': 'set up your meeting',
-      'block_time': 'block time on your calendar',
-      'create_task': 'create that task',
-      'list_tasks': 'show your tasks',
-      'check_calendar': 'check your calendar'
-    };
-    return descriptions[intent] || `handle your ${intent} request`;
-  }
+function getStepDescription(intent) {
+  const descriptions = {
+    'schedule_oneoff': 'create your scheduling link',
+    'general_chat': 'draft that email',
+    'create_meeting': 'set up your meeting',
+    'block_time': 'block time on your calendar',
+    'create_task': 'create that task',
+    'list_tasks': 'show your tasks',
+    'check_calendar': 'check your calendar'
+  };
+  return descriptions[intent] || `handle your ${intent} request`;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Intent routing - UPDATED with userId parameter
@@ -546,7 +554,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
         await ErrorHandler.wrapHandler(calendarHandler.handleCalendarRundown.bind(calendarHandler), 'Google Calendar')(params);
         break;
         
-      // General conversation - ENHANCED with modern email generation
+      // General conversation - ENHANCED with smart email generation
       case 'general_chat':
         await handleGeneralChat({
           slots,
@@ -853,7 +861,7 @@ setInterval(() => {
   console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   console.log('🌍 Now with timezone-aware calendar support - respecting every user\'s local time');
-  console.log('🧠 Enhanced with context-aware general conversation - helping you draft emails, coordinate projects & more');
+  console.log('🧠 Enhanced with smart email generation and critical thinking - less rigid, more intelligent');
   
   // Test API connections on startup
   try {
