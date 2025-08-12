@@ -368,57 +368,10 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     });
   }
 
-  // Fast path for common commands
-  if (text.match(/what projects|list projects|show.*projects|available projects/i)) {
+  // Fast path for very specific, unambiguous commands only
+  if (text.match(/^what projects|^list projects|^show.*projects$/i)) {
     await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
       slots: {}, client, channel, thread_ts: responseThreadTs
-    });
-    return;
-  }
-
-  // Fast path for common calendar commands
-  if (text.match(/what meetings.*today|meetings today|calendar today/i)) {
-    await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')({
-      slots: { period: 'today' }, client, channel, thread_ts: responseThreadTs
-    });
-    return;
-  }
-
-  if (text.match(/what meetings.*tomorrow|meetings tomorrow|calendar tomorrow/i)) {
-    await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')({
-      slots: { date: 'tomorrow' }, client, channel, thread_ts: responseThreadTs
-    });
-    return;
-  }
-
-  // Fast path for calendar blocking with specific times
-  const blockingPattern = text.match(/block.*(?:off|time).*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to|from.*to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
-  const hasBlockingKeywords = text.includes('block') && (text.includes('off') || text.includes('time')) && (text.includes('calendar') || text.includes('schedule'));
-  
-  if (blockingPattern && hasBlockingKeywords) {
-    const [fullMatch, startTime, endTime] = blockingPattern;
-    
-    // Extract date keyword (today, tomorrow, etc.)
-    const dateMatch = text.match(/\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
-    const dateKeyword = dateMatch ? dateMatch[1].toLowerCase() : 'today';
-    
-    // Try to extract title from quotes
-    const titleMatch = text.match(/(?:title it|call it|name it)\s*["']([^"']+)["']/i) || 
-                      text.match(/["']([^"']+)["']/);
-    const title = titleMatch ? titleMatch[1] : 'Focus Time';
-    
-    console.log(`Fast-path calendar blocking: ${dateKeyword} ${startTime}-${endTime} "${title}"`);
-    
-    await ErrorHandler.wrapHandler(calendarHandler.handleBlockTime.bind(calendarHandler), 'Google Calendar')({
-      slots: { 
-        title, 
-        date: dateKeyword, 
-        start_time: startTime, 
-        end_time: endTime 
-      }, 
-      client, 
-      channel, 
-      thread_ts: responseThreadTs
     });
     return;
   }
@@ -443,6 +396,8 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
       return ErrorHandler.handleApiError(e, client, channel, responseThreadTs, 'SavvyCal');
     }
   }
+
+  // Let the LLM handle everything else with intelligent classification
 
   // Enhanced agentic path
   if (!AGENT_MODE || !intentClassifier.llm) {
