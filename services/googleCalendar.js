@@ -1,4 +1,4 @@
-// services/googleCalendar.js - Google Calendar API integration with timezone support (CORRECTED)
+// services/googleCalendar.js - Google Calendar API integration with timezone support (FIXED)
 const { google } = require('googleapis');
 const dataStore = require('../utils/dataStore');
 
@@ -43,13 +43,21 @@ class GoogleCalendarService {
 
   async initializeAuth() {
     try {
-      this.auth = new google.auth.GoogleAuth({
+      const authConfig = {
         credentials: this.credentials,
         scopes: [
           'https://www.googleapis.com/auth/calendar',
           'https://www.googleapis.com/auth/calendar.events'
         ]
-      });
+      };
+
+      // Add Domain-Wide Delegation if configured
+      if (process.env.GOOGLE_IMPERSONATE_EMAIL) {
+        authConfig.subject = process.env.GOOGLE_IMPERSONATE_EMAIL;
+        console.log(`Using Domain-Wide Delegation to impersonate: ${process.env.GOOGLE_IMPERSONATE_EMAIL}`);
+      }
+
+      this.auth = new google.auth.GoogleAuth(authConfig);
       
       this.calendar = google.calendar({ version: 'v3', auth: this.auth });
       console.log('✅ Google Calendar API initialized');
@@ -344,7 +352,7 @@ class GoogleCalendarService {
     };
   }
 
-  // Create a new calendar event
+  // Create a new calendar event (FIXED with attendee fallback)
   async createEvent({
     summary,
     description = '',
@@ -386,6 +394,7 @@ class GoogleCalendarService {
     }
 
     try {
+      // First try: attempt to create with attendees
       const response = await this.calendar.events.insert({
         calendarId: this.calendarId,
         resource: eventData,
@@ -395,10 +404,61 @@ class GoogleCalendarService {
       // Clear cache to force refresh
       dataStore.apiCache.clear();
       
-      return response.data;
+      return {
+        ...response.data,
+        _attendeesInvited: true, // Flag to indicate attendees were successfully invited
+        _fallbackUsed: false
+      };
+      
     } catch (error) {
-      console.error('Error creating calendar event:', error);
-      throw new Error(`Failed to create calendar event: ${error.message}`);
+      console.error('Error creating calendar event with attendees:', error);
+      
+      // Check if this is the specific Domain-Wide Delegation error
+      if (error.message.includes('Domain-Wide Delegation') || 
+          error.message.includes('cannot invite attendees') ||
+          error.message.includes('Forbidden') && attendees.length > 0) {
+        
+        console.log('Attendee invitation failed, trying without attendees...');
+        
+        try {
+          // Fallback: Create event without attendees
+          const fallbackEventData = {
+            ...eventData,
+            attendees: [] // Remove attendees
+          };
+          
+          // Add attendee info to description instead
+          if (attendees.length > 0) {
+            const attendeeEmails = attendees.map(email => typeof email === 'string' ? email : email.email);
+            fallbackEventData.description += 
+              (fallbackEventData.description ? '\n\n' : '') +
+              `Attendees to invite manually: ${attendeeEmails.join(', ')}`;
+          }
+          
+          const response = await this.calendar.events.insert({
+            calendarId: this.calendarId,
+            resource: fallbackEventData,
+            conferenceDataVersion: meetingType === 'google-meet' ? 1 : 0
+          });
+
+          // Clear cache to force refresh
+          dataStore.apiCache.clear();
+          
+          return {
+            ...response.data,
+            _attendeesInvited: false, // Flag to indicate attendees were NOT invited
+            _fallbackUsed: true,
+            _originalAttendees: attendees // Store original attendees for user messaging
+          };
+          
+        } catch (fallbackError) {
+          console.error('Error creating calendar event without attendees:', fallbackError);
+          throw new Error(`Failed to create calendar event: ${fallbackError.message}`);
+        }
+      } else {
+        // Some other error - rethrow
+        throw new Error(`Failed to create calendar event: ${error.message}`);
+      }
     }
   }
 
@@ -589,12 +649,8 @@ class GoogleCalendarService {
     };
   }
 
-  // Parse natural language dates in specific timezone
-  // Fixed parseDate function for googleCalendar.js
-// Replace the existing parseDate method with this corrected version
-
-// Parse natural language dates in specific timezone (FIXED)
-parseDate(dateStr, userTimezone = this.defaultTimezone) {
+  // Parse natural language dates in specific timezone (FIXED)
+  parseDate(dateStr, userTimezone = this.defaultTimezone) {
     const str = dateStr.toLowerCase().trim();
     
     console.log(`Parsing date "${dateStr}" in timezone ${userTimezone}`);
@@ -812,7 +868,7 @@ parseDate(dateStr, userTimezone = this.defaultTimezone) {
     return `donna-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
   }
 
-  // FIXED: Helper: Get user's primary calendar info (THIS WAS MISSING!)
+  // Helper: Get user's primary calendar info
   async getCalendarInfo() {
     await this.ensureAuth();
     
