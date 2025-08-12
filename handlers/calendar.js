@@ -146,11 +146,10 @@ class CalendarHandler {
       let startTime, endTime;
       
       if (end_time) {
-        // User provided both start and end time
-        const { startTime: parsedStart } = googleCalendarService.parseDateTime(date, start_time, 60);
-        const { startTime: parsedEnd } = googleCalendarService.parseDateTime(date, end_time, 60);
-        startTime = parsedStart;
-        endTime = parsedEnd;
+        // User provided both start and end time - use time range parser
+        const timeRange = googleCalendarService.parseTimeRange(date, start_time, end_time);
+        startTime = timeRange.startTime;
+        endTime = timeRange.endTime;
       } else {
         // Use duration
         const { startTime: parsedStart, endTime: parsedEnd } = googleCalendarService.parseDateTime(date, start_time, duration);

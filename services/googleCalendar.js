@@ -407,11 +407,17 @@ class GoogleCalendarService {
     
     if (timeStr) {
       const time = this.parseTime(timeStr);
-      date.setHours(time.hours, time.minutes, 0, 0);
+      // Create the date in local timezone, not UTC
+      const localDate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), time.hours, time.minutes, 0, 0);
+      const startTime = localDate.toISOString();
+      const endTime = new Date(localDate.getTime() + defaultDuration * 60 * 1000).toISOString();
+      return { startTime, endTime };
     }
     
-    const startTime = date.toISOString();
-    const endTime = new Date(date.getTime() + defaultDuration * 60 * 1000).toISOString();
+    // Default to current time if no time specified
+    const now = new Date();
+    const startTime = new Date(date.getFullYear(), date.getMonth(), date.getDate(), now.getHours(), now.getMinutes(), 0, 0).toISOString();
+    const endTime = new Date(Date.parse(startTime) + defaultDuration * 60 * 1000).toISOString();
     
     return { startTime, endTime };
   }
@@ -445,21 +451,38 @@ class GoogleCalendarService {
     }
   }
 
-  // Helper: Parse time strings
+  // Helper: Parse time strings to local hours/minutes
   parseTime(timeStr) {
-    const timeRegex = /(\d{1,2})(:(\d{2}))?\s*(am|pm)?/i;
+    const timeRegex = /(\d{1,2})(?::(\d{2}))?\s*(am|pm)?/i;
     const match = timeStr.match(timeRegex);
     
     if (!match) throw new Error(`Cannot parse time: ${timeStr}`);
     
     let hours = parseInt(match[1]);
-    const minutes = parseInt(match[3] || '0');
-    const ampm = match[4]?.toLowerCase();
+    const minutes = parseInt(match[2] || '0');
+    const ampm = match[3]?.toLowerCase();
     
     if (ampm === 'pm' && hours !== 12) hours += 12;
     if (ampm === 'am' && hours === 12) hours = 0;
     
     return { hours, minutes };
+  }
+
+  // Helper: Parse time range (e.g., "8am to 5pm")
+  parseTimeRange(dateStr, startTimeStr, endTimeStr) {
+    const date = this.parseDate(dateStr);
+    
+    const startTime = this.parseTime(startTimeStr);
+    const endTime = this.parseTime(endTimeStr);
+    
+    // Create dates in local timezone
+    const startDate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), startTime.hours, startTime.minutes, 0, 0);
+    const endDate = new Date(date.getFullYear(), date.getMonth(), date.getDate(), endTime.hours, endTime.minutes, 0, 0);
+    
+    return {
+      startTime: startDate.toISOString(),
+      endTime: endDate.toISOString()
+    };
   }
 
   // Helper: Generate unique request ID for conference creation

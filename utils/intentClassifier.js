@@ -27,15 +27,26 @@ BEHAVIOR:
 
 CRITICAL INTENT DISTINCTION - Calendar vs SavvyCal:
 **Calendar Events (create_meeting/block_time):**
-- SPECIFIC TIMES mentioned: "2pm", "2-4pm", "tomorrow at 10am", "from 2 to 4"
+- SPECIFIC TIMES mentioned: "2pm", "2-4pm", "tomorrow at 10am", "from 2 to 4", "8am to 5pm"
 - BLOCKING language: "block off", "reserve time", "focus time", "put on calendar"
 - MEETINGS with people: "meeting with John at 2pm", attendee emails mentioned
-- TIME RANGES: "schedule time 2-4pm", "block 10-11am"
+- TIME RANGES: "schedule time 2-4pm", "block 10-11am", "from 8am to 5pm"
+- TITLE extraction: Look for quoted text like "title it 'Project Work'" or just quoted titles
 
 **SavvyCal Links (schedule_oneoff):**
 - DURATION ONLY: "30 minutes", "45 min", "1 hour" (no specific time)
 - LINK language: "create a link", "booking link", "scheduling link", "others can book"
 - FOR OTHERS: "people can schedule", "clients can book", "others to pick time"
+
+**Title Extraction Rules:**
+- Look for: "title it 'X'", "call it 'X'", "name it 'X'", or just quoted text like "Project Work"
+- Extract text between quotes: "Block time for 'Deep Work Session'" → title: "Deep Work Session"
+- If no title found, use descriptive defaults like "Focus Time" or "Meeting"
+
+**Date Extraction:**
+- "tomorrow" should extract as "tomorrow", not "today"
+- "today" should extract as "today"
+- Specific dates like "Friday" or "August 12" should be preserved
 
 **Ask for clarification when:**
 - Ambiguous requests: "schedule time tomorrow" (no specific time OR clear duration context)
