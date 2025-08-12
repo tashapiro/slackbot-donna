@@ -392,19 +392,27 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   }
 
   // Fast path for calendar blocking with specific times
-  const blockingPattern = text.match(/block.*(?:time|off).*?(?:(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)).*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
-  if (blockingPattern && (text.includes('block') || text.includes('reserve'))) {
-    const [, dateKeyword, startTime, endTime] = blockingPattern;
+  const blockingPattern = text.match(/block.*(?:off|time).*?(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s*(?:-|to|from.*to)\s*(\d{1,2}(?::\d{2})?\s*(?:am|pm)?)/i);
+  const hasBlockingKeywords = text.includes('block') && (text.includes('off') || text.includes('time')) && (text.includes('calendar') || text.includes('schedule'));
+  
+  if (blockingPattern && hasBlockingKeywords) {
+    const [fullMatch, startTime, endTime] = blockingPattern;
+    
+    // Extract date keyword (today, tomorrow, etc.)
+    const dateMatch = text.match(/\b(today|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i);
+    const dateKeyword = dateMatch ? dateMatch[1].toLowerCase() : 'today';
     
     // Try to extract title from quotes
     const titleMatch = text.match(/(?:title it|call it|name it)\s*["']([^"']+)["']/i) || 
                       text.match(/["']([^"']+)["']/);
     const title = titleMatch ? titleMatch[1] : 'Focus Time';
     
+    console.log(`Fast-path calendar blocking: ${dateKeyword} ${startTime}-${endTime} "${title}"`);
+    
     await ErrorHandler.wrapHandler(calendarHandler.handleBlockTime.bind(calendarHandler), 'Google Calendar')({
       slots: { 
         title, 
-        date: dateKeyword || 'today', 
+        date: dateKeyword, 
         start_time: startTime, 
         end_time: endTime 
       }, 

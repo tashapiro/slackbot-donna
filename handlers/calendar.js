@@ -126,7 +126,7 @@ class CalendarHandler {
   // Handle blocking time on calendar (personal time blocking)
   async handleBlockTime({ slots, client, channel, thread_ts }) {
     try {
-      const { 
+      let { 
         title, 
         date, 
         start_time, 
@@ -134,13 +134,25 @@ class CalendarHandler {
         duration = 60
       } = slots;
       
-      if (!title || !date || !start_time) {
+      // Default title if not provided
+      if (!title || title.trim() === '') {
+        title = 'Focus Time';
+      }
+      
+      // Default date if not provided
+      if (!date || date.trim() === '') {
+        date = 'today';
+      }
+      
+      if (!start_time) {
         return await client.chat.postMessage({
           channel,
           thread_ts,
-          text: 'I need a title, date, and start time to block calendar time. Try: "block time for deep work tomorrow 2-4pm"'
+          text: 'I need a start time to block calendar time. Try: "block time tomorrow 2-4pm" or "block calendar 9am to 5pm"'
         });
       }
+      
+      console.log(`Blocking time: ${title} on ${date} from ${start_time} to ${end_time || `${duration} mins`}`);
       
       // Parse date and time
       let startTime, endTime;
@@ -156,6 +168,8 @@ class CalendarHandler {
         startTime = parsedStart;
         endTime = parsedEnd;
       }
+      
+      console.log(`Creating calendar event: ${startTime} to ${endTime}`);
       
       // Create the calendar event (no attendees for time blocking)
       const event = await googleCalendarService.createEvent({

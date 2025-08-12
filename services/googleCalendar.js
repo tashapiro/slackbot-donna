@@ -422,26 +422,49 @@ class GoogleCalendarService {
     return { startTime, endTime };
   }
 
-  // Helper: Parse natural language dates
+  // Helper: Parse natural language dates in user's timezone
   parseDate(dateStr) {
     const str = dateStr.toLowerCase().trim();
-    const today = new Date();
+    const timeZone = 'America/New_York'; // User's timezone
+    
+    // Get current time in user's timezone
+    const nowInUserTZ = new Date().toLocaleString('en-US', { timeZone });
+    const todayInUserTZ = new Date(nowInUserTZ);
     
     switch (str) {
       case 'today':
-        return new Date(today);
+        return new Date(todayInUserTZ);
         
       case 'tomorrow':
-        const tomorrow = new Date(today);
-        tomorrow.setDate(today.getDate() + 1);
+        const tomorrow = new Date(todayInUserTZ);
+        tomorrow.setDate(todayInUserTZ.getDate() + 1);
         return tomorrow;
         
+      case 'yesterday':
+        const yesterday = new Date(todayInUserTZ);
+        yesterday.setDate(todayInUserTZ.getDate() - 1);
+        return yesterday;
+        
       case 'next week':
-        const nextWeek = new Date(today);
-        nextWeek.setDate(today.getDate() + 7);
+        const nextWeek = new Date(todayInUserTZ);
+        nextWeek.setDate(todayInUserTZ.getDate() + 7);
         return nextWeek;
         
       default:
+        // Handle weekday names
+        const weekdays = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+        const targetDay = weekdays.indexOf(str);
+        
+        if (targetDay !== -1) {
+          const currentDay = todayInUserTZ.getDay();
+          let daysUntilTarget = targetDay - currentDay;
+          if (daysUntilTarget <= 0) daysUntilTarget += 7; // Next occurrence
+          
+          const targetDate = new Date(todayInUserTZ);
+          targetDate.setDate(todayInUserTZ.getDate() + daysUntilTarget);
+          return targetDate;
+        }
+        
         // Try to parse as a standard date
         const parsed = new Date(dateStr);
         if (!isNaN(parsed.getTime())) {
