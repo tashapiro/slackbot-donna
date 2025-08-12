@@ -1,4 +1,4 @@
-// utils/dataStore.js - Abstracted storage layer (swappable for future database)
+// utils/dataStore.js - Enhanced with user timezone support
 
 class DataStore {
     constructor() {
@@ -6,6 +6,7 @@ class DataStore {
       this.threadState = new Map();
       this.userPreferences = new Map();
       this.apiCache = new Map(); // For caching API responses
+      this.userTimezones = new Map(); // NEW: Cache user timezones
     }
   
     // Thread-based storage (existing functionality)
@@ -20,10 +21,19 @@ class DataStore {
       this.threadState.set(key, { ...current, ...data });
     }
   
+    // NEW: User timezone caching
+    getUserTimezone(userId) {
+      return this.userTimezones.get(userId) || 'America/New_York'; // Default fallback
+    }
+  
+    setUserTimezone(userId, timezone) {
+      this.userTimezones.set(userId, timezone);
+    }
+  
     // User preferences storage
     getUserPreferences(userId) {
       return this.userPreferences.get(userId) || {
-        timezone: 'America/New_York', // Default to ET
+        timezone: this.getUserTimezone(userId), // Use cached timezone
         workingHours: { start: '09:00', end: '17:00' },
         defaultProjects: {},
         notifications: { dailyPulse: true }
@@ -63,6 +73,9 @@ class DataStore {
           this.apiCache.delete(key);
         }
       }
+      
+      // Also cleanup old timezone cache (keep for 24 hours)
+      // No built-in way to check age, so we'll rely on periodic cleanup
     }
   }
   

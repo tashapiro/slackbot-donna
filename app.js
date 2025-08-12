@@ -1,4 +1,4 @@
-// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services
+// app.js — Enhanced Donna with Thread Conversation Tracking & Modular Services + Timezone Support
 require('dotenv').config();
 const { App, ExpressReceiver } = require('@slack/bolt');
 
@@ -169,11 +169,11 @@ function handleSimpleQuestions(text) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Intent routing
+// Intent routing - UPDATED with userId parameter
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function handleIntent(intent, slots, client, channel, thread_ts, response = '') {
-  const params = { slots, client, channel, thread_ts };
+async function handleIntent(intent, slots, client, channel, thread_ts, response = '', userId) {
+  const params = { slots, client, channel, thread_ts, userId }; // ADDED userId
   
   switch (intent) {
     // SavvyCal/Scheduling intents
@@ -240,7 +240,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       break;
       
     case 'daily_rundown':
-      await ErrorHandler.wrapHandler(async ({ client, channel, thread_ts }) => {
+      await ErrorHandler.wrapHandler(async ({ client, channel, thread_ts, userId }) => {
         const rundown = await projectHandler.generateDailyRundown();
         await client.chat.postMessage({
           channel,
@@ -250,7 +250,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       }, 'Asana')(params);
       break;
       
-    // Calendar intents
+    // Calendar intents - NOW WITH TIMEZONE SUPPORT
     case 'check_calendar':
       await ErrorHandler.wrapHandler(calendarHandler.handleCheckCalendar.bind(calendarHandler), 'Google Calendar')(params);
       break;
@@ -300,7 +300,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Main message processing function
+// Main message processing function - UPDATED with userId support
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Handle both mention and regular message processing
@@ -314,7 +314,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   if (isMention && !isDirectMessage(channel) && !thread_ts) {
     responseThreadTs = ts; // Create a thread under the original message
     markThreadAsActive(channel, responseThreadTs, user);
-    console.log(`Creating new thread under message ${ts} in channel ${channel}`);
+    console.log(`Creating new thread under message ${ts} in channel ${channel} for user ${user}`);
   }
   
   // For existing threads, mark as active if it's a mention
@@ -329,7 +329,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
 
   const contextInfo = isDirectMessage(channel) ? 'DM' : 
                      responseThreadTs ? `thread: ${responseThreadTs}` : 'channel';
-  logger.info(`${isMention ? 'mention' : 'message'}: "${text}" in ${channel} (${contextInfo})`);
+  logger.info(`${isMention ? 'mention' : 'message'}: "${text}" from user ${user} in ${channel} (${contextInfo})`);
 
   // Handle empty mentions or just "Donna" with opening lines
   if (!text || text.length === 0) {
@@ -371,7 +371,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   // Fast path for very specific, unambiguous commands only
   if (text.match(/^what projects|^list projects|^show.*projects$/i)) {
     await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
-      slots: {}, client, channel, thread_ts: responseThreadTs
+      slots: {}, client, channel, thread_ts: responseThreadTs, userId: user
     });
     return;
   }
@@ -431,8 +431,8 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
       });
     }
 
-    // Route to appropriate handler
-    await handleIntent(routed.intent, routed.slots, client, channel, responseThreadTs, routed.response);
+    // Route to appropriate handler WITH userId
+    await handleIntent(routed.intent, routed.slots, client, channel, responseThreadTs, routed.response, user);
     
   } catch (error) {
     logger.error('Enhanced message handler error:', error);
@@ -493,7 +493,8 @@ app.action('sc_details', async ({ ack, body, client }) => {
       slots: { link_id: linkId },
       client,
       channel: body.channel?.id || body.user?.id,
-      thread_ts: body.message?.ts
+      thread_ts: body.message?.ts,
+      userId: body.user?.id
     });
   } catch (e) {
     await client.chat.postMessage({
@@ -505,7 +506,7 @@ app.action('sc_details', async ({ ack, body, client }) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Event handlers
+// Event handlers - UPDATED to pass userId
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Handle @mentions (always respond)
@@ -550,6 +551,7 @@ setInterval(() => {
   await app.start(PORT);
   console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
+  console.log('🌍 Now with timezone-aware calendar support - respecting every user\'s local time');
   
   // Test API connections on startup
   try {
