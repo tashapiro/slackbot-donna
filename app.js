@@ -178,30 +178,24 @@ async function handleGeneralChat({ slots, client, channel, thread_ts, userId, re
     // Get thread context to see if there are recent actions (like created links)
     const threadContext = dataStore.getThreadData(channel, thread_ts);
     console.log('Thread context for general chat:', threadContext);
+    console.log('LLM provided response:', response);
     
-    // Enhanced context-aware response logic
+    // If the LLM provided a substantive response, use it (it should be context-aware)
+    if (response && response.trim() !== '' && response !== "You clearly need my help. Good thing I'm Donna.") {
+      console.log('Using LLM-generated response');
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: response
+      });
+      return;
+    }
+    
+    // Fallback context-aware responses when LLM doesn't provide specific content
     const lowerMessage = originalMessage.toLowerCase();
     
-    // Check if user is asking about using a recent link in an email
-    if (lowerMessage.includes('email') && lowerMessage.includes('draft') && threadContext.last_link_id) {
-      // User wants to use a recent link in an email - provide helpful response
-      const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
-      const linkTitle = threadContext.last_link_title || 'Schedule a call';
-      
-      response = `I can help you draft that email! Here's a suggestion:\n\n` +
-                `**Subject:** Re: RAS Formatting Project - Let's Reconnect\n\n` +
-                `Hi Leanne,\n\n` +
-                `Thanks for reaching out! I'm doing much better, thank you for asking.\n\n` +
-                `I completely agree - this is the perfect time to pick up the RAS formatting project while things are quieter. I'd love to reconnect and go over what still needs to be done.\n\n` +
-                `I've set up a quick scheduling link to make it easy to find a time that works for both of us: **[${linkTitle}](${recentLinkUrl})**\n\n` +
-                `Feel free to pick whatever time works best for you this week or next, and we can dive into the scoping and timing details.\n\n` +
-                `Looking forward to moving this forward!\n\n` +
-                `Best regards,\n[Your name]\n\n` +
-                `---\n\n` +
-                `*Feel free to customize this draft however you'd like. The scheduling link is ready to go!*`;
-    }
     // Check if user is asking about a recent link specifically
-    else if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
+    if (threadContext.last_link_id && (lowerMessage.includes('link') || lowerMessage.includes('url') || lowerMessage.includes('schedule'))) {
       const recentLinkUrl = threadContext.last_link_url || `https://savvycal.com/indievisual/${threadContext.last_link_id}`;
       const linkTitle = threadContext.last_link_title || 'Meeting';
       const timeAgo = threadContext.last_action_time ? 
@@ -221,10 +215,6 @@ async function handleGeneralChat({ slots, client, channel, thread_ts, userId, re
                 `• Meeting requests and confirmations\n` +
                 `• Client communications\n\n` +
                 `Just let me know the context and I'll draft something for you.`;
-    }
-    // If the LLM provided a response, use that
-    else if (response && response.trim() !== '') {
-      // Keep the LLM's response as-is
     }
     // Default Donna responses for general conversation
     else {
@@ -261,7 +251,7 @@ async function handleGeneralChat({ slots, client, channel, thread_ts, userId, re
 // Intent routing - UPDATED with userId parameter
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function handleIntent(intent, slots, client, channel, thread_ts, response = '', userId) {
+async function handleIntent(intent, slots, client, channel, thread_ts, response = '', userId, originalText = '') {
   const params = { slots, client, channel, thread_ts, userId }; // ADDED userId
   
   switch (intent) {
@@ -377,7 +367,7 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
         thread_ts,
         userId,
         response,
-        originalMessage: slots.message || ''
+        originalMessage: originalText
       });
       break;
       
@@ -550,7 +540,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     }
 
     // Route to appropriate handler WITH userId
-    await handleIntent(routed.intent, routed.slots, client, channel, responseThreadTs, routed.response, user);
+    await handleIntent(routed.intent, routed.slots, client, channel, responseThreadTs, routed.response, user, text);
     
   } catch (error) {
     logger.error('Enhanced message handler error:', error);
