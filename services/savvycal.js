@@ -1,4 +1,4 @@
-// services/savvycal.js - SavvyCal API integration
+// services/savvycal.js - SavvyCal API integration (FIXED)
 const dataStore = require('../utils/dataStore');
 
 class SavvyCalService {
@@ -9,6 +9,13 @@ class SavvyCalService {
     
     if (!this.apiToken) {
       console.warn('SAVVYCAL_TOKEN not configured');
+    }
+    
+    // Debug logging
+    if (this.scopeSlug) {
+      console.log(`SavvyCal: Using scope slug: ${this.scopeSlug}`);
+    } else {
+      console.log('SavvyCal: Using personal scope (no scope slug configured)');
     }
   }
 
@@ -41,6 +48,8 @@ class SavvyCalService {
       ? `${this.baseUrl}/scopes/${this.scopeSlug}/links`
       : `${this.baseUrl}/links`;
 
+    console.log(`Creating SavvyCal link at: ${baseCreate}`);
+
     // Step 1: Create the link
     const createRes = await fetch(baseCreate, {
       method: 'POST',
@@ -54,6 +63,7 @@ class SavvyCalService {
     
     const createText = await createRes.text();
     if (!createRes.ok) {
+      console.error(`SavvyCal create error: ${createRes.status} ${createText}`);
       throw new Error(`SavvyCal create failed ${createRes.status}: ${createText}`);
     }
     
@@ -73,6 +83,7 @@ class SavvyCalService {
     
     if (!patchRes.ok) {
       const patchText = await patchRes.text();
+      console.error(`SavvyCal patch error: ${patchRes.status} ${patchText}`);
       throw new Error(`SavvyCal PATCH durations failed ${patchRes.status}: ${patchText}`);
     }
     
@@ -90,6 +101,7 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`SavvyCal toggle error: ${response.status} ${errorText}`);
       throw new Error(`SavvyCal toggle failed ${response.status}: ${errorText}`);
     }
 
@@ -110,6 +122,7 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`SavvyCal get link error: ${response.status} ${errorText}`);
       throw new Error(`SavvyCal get link failed ${response.status}: ${errorText}`);
     }
 
@@ -117,13 +130,15 @@ class SavvyCalService {
     return data.link || data;
   }
 
-  // List all links
+  // List all links - FIXED: Use correct response property
   async getLinks() {
     if (!this.apiToken) throw new Error('SavvyCal API token not configured');
 
     const url = this.scopeSlug
       ? `${this.baseUrl}/scopes/${this.scopeSlug}/links`
       : `${this.baseUrl}/links`;
+
+    console.log(`Fetching SavvyCal links from: ${url}`);
 
     const response = await fetch(url, {
       method: 'GET',
@@ -135,11 +150,25 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`SavvyCal get links error: ${response.status} ${errorText}`);
+      
+      // Provide more helpful error messages
+      if (response.status === 404) {
+        if (this.scopeSlug) {
+          throw new Error(`SavvyCal scope "${this.scopeSlug}" not found. Check SAVVYCAL_SCOPE_SLUG environment variable.`);
+        } else {
+          throw new Error(`SavvyCal links endpoint not found. Check your API token permissions.`);
+        }
+      }
+      
       throw new Error(`SavvyCal get links failed ${response.status}: ${errorText}`);
     }
 
     const data = await response.json();
-    return data.links || data;
+    console.log(`SavvyCal response structure:`, Object.keys(data));
+    
+    // FIXED: Use 'entries' instead of 'links' based on API documentation
+    return data.entries || data;
   }
 
   // Delete a link
@@ -153,6 +182,7 @@ class SavvyCalService {
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error(`SavvyCal delete error: ${response.status} ${errorText}`);
       throw new Error(`SavvyCal delete failed ${response.status}: ${errorText}`);
     }
 
