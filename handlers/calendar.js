@@ -405,9 +405,8 @@ class CalendarHandler {
       });
     }
   }
-
- // handlers/calendar.js - FIXED: Better error handling for daily rundown
-// Replace the handleDailyRundown method with this fixed version:
+// handlers/calendar.js - FIXED: Variable scope issue
+// Replace the handleDailyRundown method with this scope-corrected version:
 
 async handleDailyRundown({ client, channel, thread_ts, userId }) {
   try {
@@ -483,10 +482,17 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
     const allRelevantTasks = [...overdueTasks, ...todaysTasks];
     const uniqueTasks = this.deduplicateTasks(allRelevantTasks);
     
+    // FIXED: Define projectRollup outside the if block
+    let projectRollup = {
+      byProject: {},
+      hasMultipleProjects: false,
+      totalProjects: 0
+    };
+    
     console.log(`Processing ${uniqueTasks.length} unique tasks`);
     
     if (uniqueTasks.length > 0) {
-      const projectRollup = await this.generateProjectRollup(uniqueTasks, overdueTasks, todaysTasks);
+      projectRollup = await this.generateProjectRollup(uniqueTasks, overdueTasks, todaysTasks);
       
       console.log(`Generated project rollup with ${projectRollup.totalProjects} projects`);
       
@@ -591,13 +597,13 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
       }
     }
 
-    // Smart insights
+    // FIXED: Now projectRollup is always defined
     const insights = this.generateFocusedDailyInsights({
       events: todaysEvents,
       tasks: todaysTasks,
       overdue: overdueTasks,
       timezone: userTimezone,
-      projectCount: Object.keys(projectRollup?.byProject || {}).length
+      projectCount: Object.keys(projectRollup.byProject || {}).length
     });
     
     if (insights) {
@@ -623,6 +629,7 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
     });
   }
 }
+
 
 // FIXED: Enhanced project rollup with better error handling
 async generateProjectRollup(allTasks, overdueTasks, todaysTasks) {
