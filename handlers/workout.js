@@ -1,4 +1,4 @@
-// handlers/workout.js - Updated with better Peloton integration and error handling
+// handlers/workout.js - Clean version with proper syntax
 const pelotonService = require('../services/peloton');
 const googleCalendarService = require('../services/googleCalendar');
 const TimezoneHelper = require('../utils/timezoneHelper');
@@ -281,9 +281,9 @@ class WorkoutHandler {
         console.log('Could not fetch user overview:', error.message);
       }
 
-      let message = `*Your Recent Workouts:*\n\n`;
+      let message = `Recent Workouts:\n\n`;
 
-      workouts.forEach((workout, index) => {
+      workouts.forEach((workout) => {
         const workoutDate = new Date(workout.created_at);
         const dateStr = workoutDate.toLocaleDateString('en-US', {
           month: 'short',
@@ -296,12 +296,12 @@ class WorkoutHandler {
         const discipline = rideInfo.fitness_discipline || 'cycling';
         const duration = rideInfo.duration ? Math.round(rideInfo.duration / 60) : '?';
 
-        message += `${index + 1}. *${title}*\n`;
-        message += `   _${instructor} • ${duration} min • ${discipline} • ${dateStr}_\n`;
+        message += `*${title}*\n`;
+        message += `_${instructor} • ${duration} min • ${discipline} • ${dateStr}_\n`;
         
         // Add performance stats if available
         if (workout.total_output) {
-          message += `   Output: ${workout.total_output} kJ`;
+          message += `Output: ${workout.total_output} kJ`;
         }
         if (workout.avg_watts) {
           message += ` • Avg Watts: ${Math.round(workout.avg_watts)}`;
@@ -337,6 +337,7 @@ class WorkoutHandler {
         text: `Having trouble accessing your workout history: ${error.message}`
       });
     }
+  }
 }
 
 module.exports = new WorkoutHandler();
