@@ -1,7 +1,8 @@
-// handlers/calendar.js - Updated to get and use user timezone
+// handlers/calendar.js - Complete Enhanced Calendar Handler with Daily Rundowns
 const googleCalendarService = require('../services/googleCalendar');
 const TimezoneHelper = require('../utils/timezoneHelper');
 const dataStore = require('../utils/dataStore');
+const asanaService = require('../services/asana');
 
 class CalendarHandler {
   // UPDATED: Handle requests to check calendar/meetings with user timezone
@@ -314,6 +315,11 @@ class CalendarHandler {
         message += `📍 ${location}\n`;
       }
       
+      // Check if attendees were successfully invited
+      if (event._attendeesInvited === false) {
+        message += '\n⚠️ _Note: Attendees need to be invited manually (API limitation)_';
+      }
+      
       message += '\n_Calendar invite sent. You\'re all set._';
       
       await client.chat.postMessage({
@@ -400,8 +406,382 @@ class CalendarHandler {
     }
   }
 
-  // ... Other methods (handleUpdateMeeting, handleDeleteMeeting, etc.) 
-  // also need similar updates to include userId parameter and get user timezone
+  // NEW: Comprehensive Daily Rundown Handler
+  async handleDailyRundown({ client, channel, thread_ts, userId }) {
+    try {
+      const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
+      console.log(`Generating daily rundown for user ${userId} in timezone: ${userTimezone}`);
+
+      // Get all data in parallel for speed
+      const [
+        todaysEvents,
+        todaysTasks, 
+        overdueTasks,
+        thisWeekTasks,
+        nextMeeting
+      ] = await Promise.all([
+        googleCalendarService.getEventsToday(userTimezone),
+        asanaService.getTasksDueToday(),
+        asanaService.getOverdueTasks(),
+        asanaService.getTasksDueThisWeek(),
+        this.getNextMeetingToday(userTimezone)
+      ]);
+
+      // Build comprehensive rundown
+      let rundown = `*Good morning! Here's your day ahead:*\n\n`;
+      
+      // Current time context
+      const now = new Date();
+      const timeStr = now.toLocaleTimeString('en-US', { 
+        hour: 'numeric', 
+        minute: '2-digit',
+        hour12: true,
+        timeZone: userTimezone
+      });
+      const dateStr = now.toLocaleDateString('en-US', {
+        weekday: 'long',
+        month: 'long',
+        day: 'numeric',
+        timeZone: userTimezone
+      });
+      
+      rundown += `📅 *${dateStr}* • ${timeStr}\n\n`;
+
+      // Next meeting focus
+      if (nextMeeting) {
+        const startTime = new Date(nextMeeting.start.dateTime);
+        const timeUntil = this.formatTimeUntil(startTime);
+        rundown += `🔜 *Next up:* ${nextMeeting.summary} ${timeUntil}\n`;
+        
+        const meetingLink = googleCalendarService.extractMeetingLink(nextMeeting);
+        if (meetingLink) {
+          rundown += `   🔗 ${meetingLink}\n`;
+        }
+        rundown += '\n';
+      }
+
+      // High priority items first
+      if (overdueTasks.length > 0) {
+        rundown += `🚨 *Overdue Tasks* (${overdueTasks.length}):\n`;
+        rundown += overdueTasks.slice(0, 3).map(t => `   • ${t.name}`).join('\n');
+        if (overdueTasks.length > 3) {
+          rundown += `\n   _...and ${overdueTasks.length - 3} more_`;
+        }
+        rundown += '\n\n';
+      }
+
+      // Today's schedule
+      if (todaysEvents.length > 0) {
+        rundown += `📆 *Today's Calendar* (${todaysEvents.length} meetings):\n`;
+        rundown += todaysEvents.map(e => {
+          const start = new Date(e.start.dateTime || e.start.date);
+          const timeStr = start.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true,
+            timeZone: userTimezone
+          });
+          return `   • ${timeStr} - ${e.summary}`;
+        }).join('\n') + '\n\n';
+      } else {
+        rundown += `📆 *Calendar:* No meetings today - perfect for deep work!\n\n`;
+      }
+
+      // Today's tasks
+      if (todaysTasks.length > 0) {
+        rundown += `✅ *Due Today* (${todaysTasks.length}):\n`;
+        rundown += todaysTasks.map(t => `   • ${t.name}`).join('\n') + '\n\n';
+      }
+
+      // Quick insights
+      const insights = this.generateDailyInsights({
+        events: todaysEvents,
+        tasks: todaysTasks,
+        overdue: overdueTasks,
+        timezone: userTimezone
+      });
+      
+      if (insights) {
+        rundown += `💡 *Donna's Take:*\n${insights}\n\n`;
+      }
+
+      // Call to action
+      rundown += `_Ready to tackle the day? I'm here when you need me._`;
+
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: rundown
+      });
+
+    } catch (error) {
+      console.error('Daily rundown error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I had trouble generating your rundown: ${error.message}`
+      });
+    }
+  }
+
+  // NEW: Calendar rundown for specific periods
+  async handleCalendarRundown({ slots, client, channel, thread_ts, userId }) {
+    try {
+      const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
+      const { period = 'week' } = slots;
+      
+      let events = [];
+      let title = '';
+      
+      switch (period.toLowerCase()) {
+        case 'week':
+        case 'this week':
+          events = await googleCalendarService.getEventsThisWeek(userTimezone);
+          title = '*This Week\'s Calendar Overview:*';
+          break;
+        case 'today':
+          events = await googleCalendarService.getEventsToday(userTimezone);
+          title = '*Today\'s Calendar:*';
+          break;
+        case 'tomorrow':
+          const tomorrow = new Date();
+          tomorrow.setDate(tomorrow.getDate() + 1);
+          events = await googleCalendarService.getEventsForDate(tomorrow, userTimezone);
+          title = '*Tomorrow\'s Calendar:*';
+          break;
+        default:
+          events = await googleCalendarService.getEventsThisWeek(userTimezone);
+          title = '*Calendar Overview:*';
+      }
+      
+      if (events.length === 0) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: `${title}\nNo meetings scheduled. Time for deep work! 🎯`
+        });
+      }
+      
+      let message = title + '\n\n';
+      
+      if (period === 'week' || period === 'this week') {
+        // Group by day for weekly view
+        const groupedEvents = googleCalendarService.groupEventsByDate(events, userTimezone);
+        
+        for (const [date, dayEvents] of Object.entries(groupedEvents)) {
+          message += `*${date}:*\n`;
+          message += dayEvents.map(e => googleCalendarService.formatEvent(e, false, userTimezone)).join('\n') + '\n\n';
+        }
+        
+        // Add weekly insights
+        const busyDays = Object.keys(groupedEvents).filter(date => groupedEvents[date].length >= 3);
+        if (busyDays.length > 0) {
+          message += `📊 *This week:* ${busyDays.length} busy day${busyDays.length > 1 ? 's' : ''}, ${events.length} total meetings\n`;
+        }
+      } else {
+        // Simple list for single day
+        message += events.map(e => googleCalendarService.formatEvent(e, true, userTimezone)).join('\n\n');
+      }
+      
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: message.trim()
+      });
+      
+    } catch (error) {
+      console.error('Calendar rundown error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I had trouble generating your calendar rundown: ${error.message}`
+      });
+    }
+  }
+
+  // NEW: Update existing meeting
+  async handleUpdateMeeting({ slots, client, channel, thread_ts, userId }) {
+    try {
+      const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
+      const { event_id, field, value } = slots;
+      
+      if (!event_id || !field || value === undefined) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'I need an event ID, field to update, and new value. Try: "update meeting abc123 title to New Meeting Name"'
+        });
+      }
+      
+      let updateData = {};
+      
+      // Parse different field types
+      switch (field.toLowerCase()) {
+        case 'title':
+        case 'summary':
+          updateData.summary = value;
+          break;
+          
+        case 'time':
+        case 'start_time':
+          // This would need more complex parsing for time updates
+          return await client.chat.postMessage({
+            channel,
+            thread_ts,
+            text: 'Time updates are complex. Try rescheduling the meeting instead.'
+          });
+          
+        case 'location':
+          updateData.location = value;
+          break;
+          
+        case 'description':
+        case 'notes':
+          updateData.description = value;
+          break;
+          
+        default:
+          return await client.chat.postMessage({
+            channel,
+            thread_ts,
+            text: `I don't know how to update "${field}". I can update: title, location, or description.`
+          });
+      }
+      
+      const updatedEvent = await googleCalendarService.updateEvent(event_id, updateData);
+      
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `✅ Updated meeting: *${updatedEvent.summary}*`
+      });
+      
+    } catch (error) {
+      console.error('Update meeting error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I couldn't update that meeting: ${error.message}`
+      });
+    }
+  }
+
+  // NEW: Delete meeting
+  async handleDeleteMeeting({ slots, client, channel, thread_ts, userId }) {
+    try {
+      const { event_id } = slots;
+      
+      if (!event_id) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'I need an event ID to delete a meeting. Try: "delete meeting abc123"'
+        });
+      }
+      
+      await googleCalendarService.deleteEvent(event_id);
+      
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: '🗑️ Meeting deleted. Gone like it never existed.'
+      });
+      
+    } catch (error) {
+      console.error('Delete meeting error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I couldn't delete that meeting: ${error.message}`
+      });
+    }
+  }
+
+  // NEW: Helper to get next meeting today only
+  async getNextMeetingToday(userTimezone) {
+    try {
+      const now = new Date();
+      const endOfDay = new Date();
+      endOfDay.setHours(23, 59, 59, 999);
+      
+      const events = await googleCalendarService.getEvents({
+        timeMin: now.toISOString(),
+        timeMax: endOfDay.toISOString(),
+        maxResults: 1
+      });
+      
+      return events.length > 0 ? events[0] : null;
+    } catch (error) {
+      console.error('Error getting next meeting:', error);
+      return null;
+    }
+  }
+
+  // NEW: Generate intelligent daily insights
+  generateDailyInsights({ events, tasks, overdue, timezone }) {
+    const insights = [];
+    
+    // Meeting density analysis
+    if (events.length >= 5) {
+      insights.push("Heavy meeting day - block buffer time between calls.");
+    } else if (events.length >= 3) {
+      insights.push("Solid meeting day - consider prepping in batches.");
+    } else if (events.length === 0) {
+      insights.push("Clear calendar day - perfect for deep project work.");
+    }
+    
+    // Task management insights
+    if (overdue.length > 3) {
+      insights.push("Priority alert: Clear overdue tasks before starting new work.");
+    } else if (overdue.length > 0) {
+      insights.push("Quick wins: Tackle those overdue tasks first.");
+    }
+    
+    if (tasks.length > 7) {
+      insights.push("Ambitious task list - focus on the top 3 priorities.");
+    } else if (tasks.length === 0 && events.length === 0) {
+      insights.push("Light day ahead - good time for strategic planning.");
+    }
+    
+    // Time management based on current hour
+    const now = new Date();
+    const hour = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getHours();
+    
+    if (hour < 9 && events.length > 0) {
+      insights.push("Early start - grab coffee and prep for your first meeting.");
+    } else if (hour >= 9 && hour < 12 && events.filter(e => {
+      const eventHour = new Date(e.start.dateTime).getHours();
+      return eventHour < 12;
+    }).length >= 2) {
+      insights.push("Morning is packed - energy drinks and focused execution.");
+    }
+    
+    // Meeting pattern insights
+    const backToBackMeetings = this.hasBackToBackMeetings(events, timezone);
+    if (backToBackMeetings) {
+      insights.push("Back-to-back meetings detected - schedule 5-min breaks.");
+    }
+    
+    return insights.length > 0 ? insights.join(' ') : null;
+  }
+
+  // Helper: Check for back-to-back meetings
+  hasBackToBackMeetings(events, timezone) {
+    if (events.length < 2) return false;
+    
+    for (let i = 0; i < events.length - 1; i++) {
+      const currentEnd = new Date(events[i].end.dateTime);
+      const nextStart = new Date(events[i + 1].start.dateTime);
+      
+      // Less than 15 minutes between meetings = back-to-back
+      const timeBetween = (nextStart - currentEnd) / (1000 * 60);
+      if (timeBetween < 15) {
+        return true;
+      }
+    }
+    
+    return false;
+  }
 
   // Helper: Format time until next event (unchanged)
   formatTimeUntil(eventTime) {
