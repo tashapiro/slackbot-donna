@@ -405,51 +405,43 @@ class CalendarHandler {
       });
     }
   }
-// handlers/calendar.js - FIXED: Variable scope issue
-// Replace the handleDailyRundown method with this scope-corrected version:
+// handlers/calendar.js - ENHANCED: Dynamic Daily Rundown for any period
+// Replace the handleDailyRundown method with this dynamic version:
 
-async handleDailyRundown({ client, channel, thread_ts, userId }) {
+async handleDailyRundown({ slots, client, channel, thread_ts, userId }) {
   try {
     const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
-    console.log(`Generating daily rundown for user ${userId} in timezone: ${userTimezone}`);
+    const { period = 'today' } = slots;
+    
+    console.log(`Generating daily rundown for user ${userId} in timezone: ${userTimezone} for period: ${period}`);
 
-    // Get all data in parallel for speed
+    // Parse the requested period
+    const dateInfo = this.parsePeriodForRundown(period, userTimezone);
+    
+    // Get all data in parallel for the requested period
     const [
-      todaysEvents,
-      todaysTasks, 
+      periodEvents,
+      periodTasks, 
       overdueTasks,
       nextMeeting
     ] = await Promise.all([
-      googleCalendarService.getEventsToday(userTimezone),
-      asanaService.getTasksDueToday(),
-      asanaService.getOverdueTasks(),
-      this.getNextMeetingToday(userTimezone)
+      this.getEventsForPeriod(dateInfo, userTimezone),
+      this.getTasksForPeriod(dateInfo),
+      asanaService.getOverdueTasks(), // Always get overdue for context
+      dateInfo.isToday ? this.getNextMeetingToday(userTimezone) : null
     ]);
 
-    console.log(`Retrieved ${todaysEvents.length} events, ${todaysTasks.length} today tasks, ${overdueTasks.length} overdue tasks`);
+    console.log(`Retrieved ${periodEvents.length} events, ${periodTasks.length} period tasks, ${overdueTasks.length} overdue tasks`);
 
-    // Build comprehensive rundown with Slack-friendly formatting
-    let rundown = `*Good morning! Here's your day ahead:*\n\n`;
+    // Build comprehensive rundown with appropriate greeting
+    const greeting = this.getGreetingForPeriod(dateInfo, userTimezone);
+    let rundown = `*${greeting}*\n\n`;
     
-    // Current time context
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString('en-US', { 
-      hour: 'numeric', 
-      minute: '2-digit',
-      hour12: true,
-      timeZone: userTimezone
-    });
-    const dateStr = now.toLocaleDateString('en-US', {
-      weekday: 'long',
-      month: 'long',
-      day: 'numeric',
-      timeZone: userTimezone
-    });
-    
-    rundown += `📅 *${dateStr}* • ${timeStr}\n\n`;
+    // Date/time context for the requested period
+    rundown += `📅 *${dateInfo.displayDate}*${dateInfo.isToday ? ` • ${dateInfo.currentTime}` : ''}\n\n`;
 
-    // Next meeting focus
-    if (nextMeeting) {
+    // Next meeting focus (only for today)
+    if (nextMeeting && dateInfo.isToday) {
       const startTime = new Date(nextMeeting.start.dateTime);
       const timeUntil = this.formatTimeUntil(startTime);
       rundown += `🔜 *Next up:* ${nextMeeting.summary} ${timeUntil}\n`;
@@ -461,156 +453,194 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
       rundown += '\n';
     }
 
-    // TODAY'S CALENDAR
-    if (todaysEvents.length > 0) {
-      rundown += `📆 *Today's Calendar* (${todaysEvents.length} meetings):\n`;
-      rundown += todaysEvents.map(e => {
-        const start = new Date(e.start.dateTime || e.start.date);
-        const timeStr = start.toLocaleTimeString('en-US', { 
-          hour: 'numeric', 
-          minute: '2-digit',
-          hour12: true,
-          timeZone: userTimezone
-        });
-        return `   • ${timeStr} - ${e.summary}`;
-      }).join('\n') + '\n\n';
+    // CALENDAR for the requested period
+    if (periodEvents.length > 0) {
+      const calendarTitle = dateInfo.isToday ? 'Today\'s Calendar' : 
+                           dateInfo.isTomorrow ? 'Tomorrow\'s Calendar' : 
+                           dateInfo.isWeek ? 'This Week\'s Calendar' : 
+                           `Calendar for ${dateInfo.displayDate}`;
+      
+      rundown += `📆 *${calendarTitle}* (${periodEvents.length} meetings):\n`;
+      
+      if (dateInfo.isWeek) {
+        // Group by day for week view
+        const groupedEvents = googleCalendarService.groupEventsByDate(periodEvents, userTimezone);
+        for (const [date, dayEvents] of Object.entries(groupedEvents)) {
+          rundown += `*${date}:*\n`;
+          rundown += dayEvents.map(e => {
+            const start = new Date(e.start.dateTime || e.start.date);
+            const timeStr = start.toLocaleTimeString('en-US', { 
+              hour: 'numeric', 
+              minute: '2-digit',
+              hour12: true,
+              timeZone: userTimezone
+            });
+            return `   • ${timeStr} - ${e.summary}`;
+          }).join('\n') + '\n';
+        }
+        rundown += '\n';
+      } else {
+        // Single day view
+        rundown += periodEvents.map(e => {
+          const start = new Date(e.start.dateTime || e.start.date);
+          const timeStr = start.toLocaleTimeString('en-US', { 
+            hour: 'numeric', 
+            minute: '2-digit',
+            hour12: true,
+            timeZone: userTimezone
+          });
+          return `   • ${timeStr} - ${e.summary}`;
+        }).join('\n') + '\n\n';
+      }
     } else {
-      rundown += `📆 *Calendar:* No meetings today - perfect for deep work!\n\n`;
+      const emptyMessage = dateInfo.isToday ? 'No meetings today - perfect for deep work!' :
+                          dateInfo.isTomorrow ? 'No meetings tomorrow - great for project focus!' :
+                          dateInfo.isWeek ? 'Light meeting week ahead!' :
+                          `No meetings on ${dateInfo.displayDate}`;
+      rundown += `📆 *Calendar:* ${emptyMessage}\n\n`;
     }
 
-    // ENHANCED TASK SECTION WITH PROJECT BREAKDOWN
-    const allRelevantTasks = [...overdueTasks, ...todaysTasks];
-    const uniqueTasks = this.deduplicateTasks(allRelevantTasks);
+    // ENHANCED TASK SECTION - Include overdue + period tasks
+    const relevantTasks = dateInfo.isToday ? 
+      [...overdueTasks, ...periodTasks] : // Today: show overdue + today's tasks
+      [...overdueTasks.slice(0, 3), ...periodTasks]; // Other periods: limited overdue + period tasks
+      
+    const uniqueTasks = this.deduplicateTasks(relevantTasks);
     
-    // FIXED: Define projectRollup outside the if block
+    // Generate project rollup for the period
     let projectRollup = {
       byProject: {},
       hasMultipleProjects: false,
       totalProjects: 0
     };
     
-    console.log(`Processing ${uniqueTasks.length} unique tasks`);
+    console.log(`Processing ${uniqueTasks.length} unique tasks for ${period}`);
     
     if (uniqueTasks.length > 0) {
-      projectRollup = await this.generateProjectRollup(uniqueTasks, overdueTasks, todaysTasks);
+      projectRollup = await this.generateProjectRollup(uniqueTasks, overdueTasks, periodTasks);
       
       console.log(`Generated project rollup with ${projectRollup.totalProjects} projects`);
       
-     // handlers/calendar.js - IMPROVED: Better project display formatting
-// Replace the project display section in handleDailyRundown (around line 110-160):
-
-if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
-  // Show detailed project breakdown with tasks
-  rundown += `📊 *Project Workload* (${uniqueTasks.length} total tasks):\n\n`;
-  
-  // FIXED: Better sorting with defensive programming
-  const sortedProjects = Object.entries(projectRollup.byProject || {})
-    .sort(([,a], [,b]) => {
-      // Ensure arrays exist before accessing length
-      const aOverdue = (a && a.overdueTasks) ? a.overdueTasks.length : 0;
-      const bOverdue = (b && b.overdueTasks) ? b.overdueTasks.length : 0;
-      const aTotal = (a && a.allTasks) ? a.allTasks.length : 0;
-      const bTotal = (b && b.allTasks) ? b.allTasks.length : 0;
-      
-      if (aOverdue !== bOverdue) return bOverdue - aOverdue;
-      return bTotal - aTotal;
-    });
-  
-  console.log(`Sorted ${sortedProjects.length} projects for display`);
-  
-  for (const [projectName, projectData] of sortedProjects) {
-    if (!projectData) {
-      console.warn(`Skipping undefined project data for ${projectName}`);
-      continue;
-    }
-    
-    const allProjectTasks = projectData.allTasks || [];
-    const overdueProjectTasks = projectData.overdueTasks || [];
-    const todayProjectTasks = projectData.todayTasks || [];
-    
-    // IMPROVED: Show total task count in parentheses
-    const totalTaskCount = allProjectTasks.length;
-    
-    // Create project name as hyperlink to Asana board
-    const projectLink = projectData.url ? 
-      `<${projectData.url}|${projectName}>` : 
-      projectName;
-    
-    // IMPROVED: Format with task count
-    rundown += `*${projectLink}* (${totalTaskCount} tasks)\n`;
-    
-    // IMPROVED: Get top 3 most urgent tasks (prioritize overdue, then due today)
-    const mostUrgentTasks = [
-      ...overdueProjectTasks, // All overdue tasks first
-      ...todayProjectTasks.filter(t => !overdueProjectTasks.some(o => o.gid === t.gid)) // Today tasks that aren't already overdue
-    ]
-    .slice(0, 3); // Take top 3 most urgent
-    
-    // IMPROVED: Display tasks as bullet points
-    if (mostUrgentTasks.length > 0) {
-      for (const task of mostUrgentTasks) {
-        if (!task || !task.name) continue; // Skip invalid tasks
+      if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
+        // Show detailed project breakdown
+        const workloadTitle = dateInfo.isToday ? 'Project Workload' :
+                             dateInfo.isTomorrow ? 'Tomorrow\'s Project Focus' :
+                             dateInfo.isWeek ? 'Week\'s Project Workload' :
+                             `Project Work for ${dateInfo.displayDate}`;
         
-        const isOverdue = overdueProjectTasks.some(t => t && t.gid === task.gid);
-        const prefix = isOverdue ? '🚨' : '📋';
-        rundown += `   ${prefix} ${task.name}\n`;
+        rundown += `📊 *${workloadTitle}* (${uniqueTasks.length} total tasks):\n\n`;
+        
+        // Sort projects by urgency
+        const sortedProjects = Object.entries(projectRollup.byProject || {})
+          .sort(([,a], [,b]) => {
+            const aOverdue = (a && a.overdueTasks) ? a.overdueTasks.length : 0;
+            const bOverdue = (b && b.overdueTasks) ? b.overdueTasks.length : 0;
+            const aTotal = (a && a.allTasks) ? a.allTasks.length : 0;
+            const bTotal = (b && b.allTasks) ? b.allTasks.length : 0;
+            
+            if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+            return bTotal - aTotal;
+          });
+        
+        for (const [projectName, projectData] of sortedProjects) {
+          if (!projectData) continue;
+          
+          const allProjectTasks = projectData.allTasks || [];
+          const overdueProjectTasks = projectData.overdueTasks || [];
+          const periodProjectTasks = projectData.periodTasks || [];
+          
+          const totalTaskCount = allProjectTasks.length;
+          
+          // Create project name as hyperlink
+          const projectLink = projectData.url ? 
+            `<${projectData.url}|${projectName}>` : 
+            projectName;
+          
+          rundown += `*${projectLink}* (${totalTaskCount} tasks)\n`;
+          
+          // Get most urgent tasks for this period
+          const mostUrgentTasks = [
+            ...overdueProjectTasks.slice(0, 2), // Top 2 overdue
+            ...periodProjectTasks.slice(0, 2)   // Top 2 for the period
+          ].slice(0, 3); // Max 3 total
+          
+          if (mostUrgentTasks.length > 0) {
+            for (const task of mostUrgentTasks) {
+              if (!task || !task.name) continue;
+              
+              const isOverdue = overdueProjectTasks.some(t => t && t.gid === task.gid);
+              const prefix = isOverdue ? '🚨' : '📋';
+              rundown += `   ${prefix} ${task.name}\n`;
+            }
+          } else {
+            const emptyTaskMessage = dateInfo.isToday ? 'No urgent tasks' :
+                                   dateInfo.isTomorrow ? 'No tasks due tomorrow' :
+                                   'No tasks for this period';
+            rundown += `   📋 ${emptyTaskMessage}\n`;
+          }
+          
+          const remainingCount = totalTaskCount - mostUrgentTasks.length;
+          if (remainingCount > 0) {
+            rundown += `   _...and ${remainingCount} more tasks_\n`;
+          }
+          
+          rundown += '\n';
+        }
+        
+      } else {
+        // Simplified view for smaller workloads
+        if (overdueTasks.length > 0 && dateInfo.isToday) {
+          rundown += `🚨 *Priority: Overdue Tasks* (${overdueTasks.length} total):\n`;
+          rundown += overdueTasks.slice(0, 4).map(t => {
+            const projectName = this.getTaskProjectName(t);
+            return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
+          }).join('\n');
+          if (overdueTasks.length > 4) {
+            rundown += `\n   _...and ${overdueTasks.length - 4} more overdue_`;
+          }
+          rundown += '\n\n';
+        }
+
+        if (periodTasks.length > 0) {
+          const taskTitle = dateInfo.isToday ? 'Due Today' :
+                           dateInfo.isTomorrow ? 'Due Tomorrow' :
+                           dateInfo.isWeek ? 'Due This Week' :
+                           `Due ${dateInfo.displayDate}`;
+          
+          rundown += `✅ *${taskTitle}* (${periodTasks.length} total):\n`;
+          rundown += periodTasks.slice(0, 4).map(t => {
+            const projectName = this.getTaskProjectName(t);
+            return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
+          }).join('\n');
+          if (periodTasks.length > 4) {
+            rundown += `\n   _...and ${periodTasks.length - 4} more tasks_`;
+          }
+          rundown += '\n\n';
+        }
       }
-    } else {
-      rundown += `   📋 No urgent tasks\n`;
-    }
-    
-    // Show remaining count if there are more tasks
-    const remainingCount = totalTaskCount - mostUrgentTasks.length;
-    if (remainingCount > 0) {
-      rundown += `   _...and ${remainingCount} more tasks_\n`;
-    }
-    
-    rundown += '\n'; // Add space between projects
-  }
-} else {
-  // Show simplified view for manageable workload (keep existing logic)
-  if (overdueTasks.length > 0) {
-    rundown += `🚨 *Priority: Overdue Tasks* (${overdueTasks.length} total):\n`;
-    rundown += overdueTasks.slice(0, 4).map(t => {
-      const projectName = this.getTaskProjectName(t);
-      return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
-    }).join('\n');
-    if (overdueTasks.length > 4) {
-      rundown += `\n   _...and ${overdueTasks.length - 4} more overdue_`;
-    }
-    rundown += '\n\n';
-  }
-
-  const uniqueTodayTasks = todaysTasks.filter(t => !overdueTasks.some(o => o.gid === t.gid));
-  if (uniqueTodayTasks.length > 0) {
-    rundown += `✅ *Due Today* (${uniqueTodayTasks.length} total):\n`;
-    rundown += uniqueTodayTasks.slice(0, 4).map(t => {
-      const projectName = this.getTaskProjectName(t);
-      return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
-    }).join('\n');
-    if (uniqueTodayTasks.length > 4) {
-      rundown += `\n   _...and ${uniqueTodayTasks.length - 4} more due today_`;
-    }
-    rundown += '\n\n';
-  }
-}
     }
 
-    // FIXED: Now projectRollup is always defined
-    const insights = this.generateFocusedDailyInsights({
-      events: todaysEvents,
-      tasks: todaysTasks,
+    // Smart insights for the period
+    const insights = this.generatePeriodInsights({
+      events: periodEvents,
+      tasks: periodTasks,
       overdue: overdueTasks,
       timezone: userTimezone,
-      projectCount: Object.keys(projectRollup.byProject || {}).length
+      projectCount: Object.keys(projectRollup.byProject || {}).length,
+      dateInfo
     });
     
     if (insights) {
       rundown += `💡 *Donna's Take:*\n${insights}\n\n`;
     }
 
-    // Call to action
-    rundown += `_Ready to tackle the day? I'm here when you need me._`;
+    // Period-appropriate call to action
+    const callToAction = dateInfo.isToday ? 'Ready to tackle the day? I\'m here when you need me.' :
+                        dateInfo.isTomorrow ? 'Tomorrow\'s looking good. Plan accordingly!' :
+                        dateInfo.isWeek ? 'Week ahead mapped out. Time to execute!' :
+                        'Schedule reviewed. Make it count!';
+    
+    rundown += `_${callToAction}_`;
 
     await client.chat.postMessage({
       channel,
@@ -620,7 +650,6 @@ if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
 
   } catch (error) {
     console.error('Daily rundown error:', error);
-    console.error('Error stack:', error.stack);
     await client.chat.postMessage({
       channel,
       thread_ts,
@@ -629,6 +658,227 @@ if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
   }
 }
 
+// NEW: Parse period into actionable date info
+parsePeriodForRundown(period, userTimezone) {
+  const now = new Date();
+  const userNow = new Date(now.toLocaleString('en-US', { timeZone: userTimezone }));
+  
+  const lowerPeriod = period.toLowerCase().trim();
+  
+  switch (lowerPeriod) {
+    case 'today':
+      return {
+        type: 'day',
+        date: userNow,
+        displayDate: userNow.toLocaleDateString('en-US', {
+          weekday: 'long',
+          month: 'long',
+          day: 'numeric',
+          timeZone: userTimezone
+        }),
+        currentTime: userNow.toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+          timeZone: userTimezone
+        }),
+        isToday: true,
+        isTomorrow: false,
+        isWeek: false
+      };
+      
+    case 'tomorrow':
+      const tomorrow = new Date(userNow);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      return {
+        type: 'day',
+        date: tomorrow,
+        displayDate: tomorrow.toLocaleDateString('en-US', {
+          weekday: 'long',
+          month: 'long',
+          day: 'numeric',
+          timeZone: userTimezone
+        }),
+        isToday: false,
+        isTomorrow: true,
+        isWeek: false
+      };
+      
+    case 'this week':
+    case 'week':
+      return {
+        type: 'week',
+        date: userNow,
+        displayDate: 'This Week',
+        isToday: false,
+        isTomorrow: false,
+        isWeek: true
+      };
+      
+    default:
+      // Try to parse as specific date
+      try {
+        const parsedDate = new Date(period);
+        if (!isNaN(parsedDate.getTime())) {
+          return {
+            type: 'day',
+            date: parsedDate,
+            displayDate: parsedDate.toLocaleDateString('en-US', {
+              weekday: 'long',
+              month: 'long',
+              day: 'numeric',
+              year: 'numeric',
+              timeZone: userTimezone
+            }),
+            isToday: false,
+            isTomorrow: false,
+            isWeek: false
+          };
+        }
+      } catch (e) {
+        // Fall back to today
+      }
+      
+      // Default to today
+      return this.parsePeriodForRundown('today', userTimezone);
+  }
+}
+
+// NEW: Get appropriate greeting for the period
+getGreetingForPeriod(dateInfo, userTimezone) {
+  if (dateInfo.isToday) {
+    const hour = new Date().toLocaleString('en-US', { timeZone: userTimezone, hour12: false }).split(',')[1].split(':')[0].trim();
+    const hourNum = parseInt(hour);
+    
+    if (hourNum < 12) return "Good morning! Here's your day ahead:";
+    if (hourNum < 17) return "Good afternoon! Here's what's left of your day:";
+    return "Good evening! Here's how today shapes up:";
+  }
+  
+  if (dateInfo.isTomorrow) return "Here's what tomorrow looks like:";
+  if (dateInfo.isWeek) return "Here's your week ahead:";
+  return `Here's your schedule for ${dateInfo.displayDate}:`;
+}
+
+// NEW: Get events for any period
+async getEventsForPeriod(dateInfo, userTimezone) {
+  if (dateInfo.isWeek) {
+    return await googleCalendarService.getEventsThisWeek(userTimezone);
+  } else {
+    return await googleCalendarService.getEventsForDate(dateInfo.date, userTimezone);
+  }
+}
+
+// NEW: Get tasks for any period
+async getTasksForPeriod(dateInfo) {
+  if (dateInfo.isToday) {
+    return await asanaService.getTasksDueToday();
+  } else if (dateInfo.isTomorrow) {
+    const tomorrow = new Date(dateInfo.date);
+    const tomorrowStr = tomorrow.toISOString().split('T')[0];
+    return await asanaService.getTasks({ due_on: tomorrowStr, includeCompleted: false });
+  } else if (dateInfo.isWeek) {
+    return await asanaService.getTasksDueThisWeek();
+  } else {
+    // Specific date
+    const dateStr = dateInfo.date.toISOString().split('T')[0];
+    return await asanaService.getTasks({ due_on: dateStr, includeCompleted: false });
+  }
+}
+
+// UPDATED: Enhanced project rollup with period tasks
+async generateProjectRollup(allTasks, overdueTasks, periodTasks) {
+  console.log(`Generating project rollup for ${allTasks.length} tasks`);
+  
+  const rollup = {
+    byProject: {},
+    hasMultipleProjects: false,
+    totalProjects: 0
+  };
+  
+  try {
+    const projectCache = new Map();
+    
+    // Organize tasks by project
+    for (const task of allTasks) {
+      if (!task) continue;
+      
+      const projectInfo = this.getTaskProjectInfo(task);
+      const projectName = projectInfo.name;
+      
+      if (!rollup.byProject[projectName]) {
+        rollup.byProject[projectName] = {
+          allTasks: [],
+          overdueTasks: [],
+          periodTasks: [],
+          projectId: projectInfo.id,
+          url: null
+        };
+        
+        if (projectInfo.id && !projectCache.has(projectInfo.id)) {
+          const projectUrl = `https://app.asana.com/0/${projectInfo.id}`;
+          projectCache.set(projectInfo.id, projectUrl);
+        }
+        rollup.byProject[projectName].url = projectCache.get(projectInfo.id);
+      }
+      
+      // Add to appropriate task lists
+      rollup.byProject[projectName].allTasks.push(task);
+      
+      if (overdueTasks && overdueTasks.some(o => o && o.gid === task.gid)) {
+        rollup.byProject[projectName].overdueTasks.push(task);
+      }
+      
+      if (periodTasks && periodTasks.some(t => t && t.gid === task.gid)) {
+        rollup.byProject[projectName].periodTasks.push(task);
+      }
+    }
+    
+    rollup.totalProjects = Object.keys(rollup.byProject).length;
+    rollup.hasMultipleProjects = rollup.totalProjects > 1;
+    
+    return rollup;
+    
+  } catch (error) {
+    console.error('Error in generateProjectRollup:', error);
+    return { byProject: {}, hasMultipleProjects: false, totalProjects: 0 };
+  }
+}
+
+// NEW: Period-aware insights
+generatePeriodInsights({ events, tasks, overdue, timezone, projectCount, dateInfo }) {
+  const insights = [];
+  
+  // Calendar insights
+  if (events.length === 0) {
+    if (dateInfo.isToday) {
+      insights.push("Clear calendar today - perfect for tackling those overdue tasks.");
+    } else if (dateInfo.isTomorrow) {
+      insights.push("No meetings tomorrow - great day for deep project work.");
+    } else if (dateInfo.isWeek) {
+      insights.push("Light meeting week - perfect for focused execution.");
+    }
+  } else if (events.length >= 4) {
+    insights.push("Heavy meeting schedule - consider blocking focus time between sessions.");
+  }
+  
+  // Task insights
+  if (overdue.length > 15 && dateInfo.isToday) {
+    insights.push(`Major backlog across ${projectCount} projects - consider doing a priority triage session.`);
+  } else if (overdue.length > 5 && dateInfo.isToday) {
+    insights.push("Focus on clearing overdue tasks before starting new work.");
+  }
+  
+  if (projectCount > 4) {
+    insights.push("Multi-project workload - consider batching work by project for better focus.");
+  }
+  
+  if (tasks.length > 10) {
+    insights.push("Ambitious task list - pick your top 3 priorities.");
+  }
+  
+  return insights.length > 0 ? insights.join(' ') : null;
+}
 
 // FIXED: Enhanced project rollup with better error handling
 async generateProjectRollup(allTasks, overdueTasks, todaysTasks) {
@@ -699,55 +949,7 @@ async generateProjectRollup(allTasks, overdueTasks, todaysTasks) {
 
 
 
-// UPDATED: Enhanced project rollup with separate task categorization
-async generateProjectRollup(allTasks, overdueTasks, todaysTasks) {
-  const rollup = {
-    byProject: {},
-    hasMultipleProjects: false,
-    totalProjects: 0
-  };
-  
-  const projectCache = new Map();
-  
-  // Organize tasks by project
-  for (const task of allTasks) {
-    const projectInfo = this.getTaskProjectInfo(task);
-    const projectName = projectInfo.name;
-    
-    if (!rollup.byProject[projectName]) {
-      rollup.byProject[projectName] = {
-        allTasks: [],
-        overdueTasks: [],
-        todayTasks: [],
-        projectId: projectInfo.id,
-        url: null
-      };
-      
-      // Get Asana project URL
-      if (projectInfo.id && !projectCache.has(projectInfo.id)) {
-        const projectUrl = `https://app.asana.com/0/${projectInfo.id}`;
-        projectCache.set(projectInfo.id, projectUrl);
-      }
-      rollup.byProject[projectName].url = projectCache.get(projectInfo.id);
-    }
-    
-    // Add to appropriate task lists
-    rollup.byProject[projectName].allTasks.push(task);
-    
-    if (overdueTasks.some(o => o.gid === task.gid)) {
-      rollup.byProject[projectName].overdueTasks.push(task);
-    }
-    
-    if (todaysTasks.some(t => t.gid === task.gid)) {
-      rollup.byProject[projectName].todayTasks.push(task);
-    }
-  }
-  
-  rollup.totalProjects = Object.keys(rollup.byProject).length;
-  rollup.hasMultipleProjects = rollup.totalProjects > 1;
-  
-  return rollup;
-}
+
 
 // UPDATED: Better project info extraction
 getTaskProjectInfo(task) {
@@ -765,61 +967,7 @@ getTaskProjectInfo(task) {
 }
 
 
-// NEW: Generate project rollup with Asana board links
-async generateProjectRollup(tasks) {
-  const rollup = {
-    byProject: {},
-    hasMultipleProjects: false,
-    totalProjects: 0
-  };
-  
-  const projectCache = new Map(); // Cache project details to avoid duplicate API calls
-  
-  for (const task of tasks) {
-    if (task.projects && task.projects.length > 0) {
-      const project = task.projects[0]; // Use primary project
-      const projectName = project.name || 'Unnamed Project';
-      
-      if (!rollup.byProject[projectName]) {
-        rollup.byProject[projectName] = {
-          tasks: [],
-          projectId: project.gid,
-          url: null
-        };
-        
-        // Try to get project URL (Asana board link)
-        try {
-          if (!projectCache.has(project.gid)) {
-            // Construct Asana project URL
-            const baseUrl = 'https://app.asana.com/0';
-            const projectUrl = `${baseUrl}/${project.gid}`;
-            projectCache.set(project.gid, projectUrl);
-          }
-          rollup.byProject[projectName].url = projectCache.get(project.gid);
-        } catch (error) {
-          console.log(`Could not get URL for project ${projectName}:`, error.message);
-        }
-      }
-      
-      rollup.byProject[projectName].tasks.push(task);
-    } else {
-      // Tasks without projects
-      if (!rollup.byProject['No Project']) {
-        rollup.byProject['No Project'] = {
-          tasks: [],
-          projectId: null,
-          url: null
-        };
-      }
-      rollup.byProject['No Project'].tasks.push(task);
-    }
-  }
-  
-  rollup.totalProjects = Object.keys(rollup.byProject).length;
-  rollup.hasMultipleProjects = rollup.totalProjects > 1;
-  
-  return rollup;
-}
+
 
 // NEW: Remove duplicate tasks (tasks that appear in both overdue and due today)
 deduplicateTasks(tasks) {
