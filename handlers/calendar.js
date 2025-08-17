@@ -406,9 +406,8 @@ class CalendarHandler {
     }
   }
 
-  // NEW: Comprehensive Daily Rundown Handler
-  // handlers/calendar.js - Enhanced with Project Rollups
-// Replace the handleDailyRundown method with this enhanced version:
+ // handlers/calendar.js - Better Slack Formatting with Task Details
+// Replace the handleDailyRundown method with this Slack-optimized version:
 
 async handleDailyRundown({ client, channel, thread_ts, userId }) {
   try {
@@ -428,7 +427,7 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
       this.getNextMeetingToday(userTimezone)
     ]);
 
-    // Build comprehensive rundown
+    // Build comprehensive rundown with Slack-friendly formatting
     let rundown = `*Good morning! Here's your day ahead:*\n\n`;
     
     // Current time context
@@ -448,7 +447,7 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
     
     rundown += `📅 *${dateStr}* • ${timeStr}\n\n`;
 
-    // Next meeting focus (prioritize this)
+    // Next meeting focus
     if (nextMeeting) {
       const startTime = new Date(nextMeeting.start.dateTime);
       const timeUntil = this.formatTimeUntil(startTime);
@@ -478,61 +477,78 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
       rundown += `📆 *Calendar:* No meetings today - perfect for deep work!\n\n`;
     }
 
-    // ENHANCED TASK SECTION WITH PROJECT ROLLUPS
+    // ENHANCED TASK SECTION WITH PROJECT BREAKDOWN
     const allRelevantTasks = [...overdueTasks, ...todaysTasks];
     const uniqueTasks = this.deduplicateTasks(allRelevantTasks);
     
     if (uniqueTasks.length > 0) {
-      const projectRollup = await this.generateProjectRollup(uniqueTasks);
+      const projectRollup = await this.generateProjectRollup(uniqueTasks, overdueTasks, todaysTasks);
       
       if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
-        // Show project rollup when there are many tasks across projects
-        rundown += `📊 *Project Workload* (${uniqueTasks.length} total tasks):\n`;
+        // Show detailed project breakdown with tasks
+        rundown += `📊 *Project Workload* (${uniqueTasks.length} total tasks):\n\n`;
         
-        // Sort projects by task count (highest first)
+        // Sort projects by priority: overdue count first, then total count
         const sortedProjects = Object.entries(projectRollup.byProject)
-          .sort(([,a], [,b]) => b.tasks.length - a.tasks.length);
+          .sort(([,a], [,b]) => {
+            const aOverdue = a.overdueTasks.length;
+            const bOverdue = b.overdueTasks.length;
+            if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+            return b.allTasks.length - a.allTasks.length;
+          });
         
         for (const [projectName, projectData] of sortedProjects) {
-          const overdueCount = projectData.tasks.filter(t => overdueTasks.some(o => o.gid === t.gid)).length;
-          const todayCount = projectData.tasks.filter(t => todaysTasks.some(o => o.gid === t.gid)).length;
+          const overdueCount = projectData.overdueTasks.length;
+          const todayCount = projectData.todayTasks.length;
           
-          let statusText = '';
+          // Create project name as hyperlink to Asana board
+          const projectLink = projectData.url ? 
+            `<${projectData.url}|${projectName}>` : 
+            projectName;
+          
+          // Format task counts
+          let taskCounts = '';
           if (overdueCount > 0 && todayCount > 0) {
-            statusText = ` (${overdueCount} overdue, ${todayCount} due today)`;
+            taskCounts = ` (${todayCount} due, ${overdueCount} overdue)`;
           } else if (overdueCount > 0) {
-            statusText = ` (${overdueCount} overdue)`;
+            taskCounts = ` (${overdueCount} overdue)`;
           } else if (todayCount > 0) {
-            statusText = ` (${todayCount} due today)`;
+            taskCounts = ` (${todayCount} due today)`;
           }
           
-          rundown += `   • **${projectName}** (${projectData.tasks.length} tasks)${statusText}\n`;
-          if (projectData.url) {
-            rundown += `     📋 [View Board](${projectData.url})\n`;
+          rundown += `*${projectLink}*${taskCounts}\n`;
+          
+          // Show top 3-4 most urgent tasks for this project
+          const urgentTasks = [
+            ...projectData.overdueTasks.slice(0, 2), // Top 2 overdue
+            ...projectData.todayTasks.slice(0, 2)    // Top 2 due today
+          ].slice(0, 4); // Max 4 total
+          
+          for (const task of urgentTasks) {
+            const isOverdue = overdueCount > 0 && projectData.overdueTasks.includes(task);
+            const prefix = isOverdue ? '🚨' : '📋';
+            rundown += `   ${prefix} ${task.name}\n`;
           }
-        }
-        rundown += '\n';
-        
-        // Show top priority tasks
-        if (overdueTasks.length > 0) {
-          rundown += `🚨 *Top Priority* (${overdueTasks.length} overdue total):\n`;
-          rundown += overdueTasks.slice(0, 3).map(t => `   • ${t.name}`).join('\n');
-          if (overdueTasks.length > 3) {
-            rundown += `\n   _...${overdueTasks.length - 3} more overdue tasks across projects_`;
+          
+          // Show remaining count if there are more tasks
+          const remainingCount = projectData.allTasks.length - urgentTasks.length;
+          if (remainingCount > 0) {
+            rundown += `   _...and ${remainingCount} more tasks_\n`;
           }
-          rundown += '\n\n';
+          
+          rundown += '\n';
         }
         
       } else {
-        // Show individual tasks when workload is manageable
+        // Show simplified view for manageable workload
         if (overdueTasks.length > 0) {
           rundown += `🚨 *Priority: Overdue Tasks* (${overdueTasks.length} total):\n`;
-          rundown += overdueTasks.slice(0, 3).map(t => {
+          rundown += overdueTasks.slice(0, 4).map(t => {
             const projectName = this.getTaskProjectName(t);
             return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
           }).join('\n');
-          if (overdueTasks.length > 3) {
-            rundown += `\n   _...and ${overdueTasks.length - 3} more overdue_`;
+          if (overdueTasks.length > 4) {
+            rundown += `\n   _...and ${overdueTasks.length - 4} more overdue_`;
           }
           rundown += '\n\n';
         }
@@ -540,25 +556,25 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
         const uniqueTodayTasks = todaysTasks.filter(t => !overdueTasks.some(o => o.gid === t.gid));
         if (uniqueTodayTasks.length > 0) {
           rundown += `✅ *Due Today* (${uniqueTodayTasks.length} total):\n`;
-          rundown += uniqueTodayTasks.slice(0, 5).map(t => {
+          rundown += uniqueTodayTasks.slice(0, 4).map(t => {
             const projectName = this.getTaskProjectName(t);
             return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
           }).join('\n');
-          if (uniqueTodayTasks.length > 5) {
-            rundown += `\n   _...and ${uniqueTodayTasks.length - 5} more due today_`;
+          if (uniqueTodayTasks.length > 4) {
+            rundown += `\n   _...and ${uniqueTodayTasks.length - 4} more due today_`;
           }
           rundown += '\n\n';
         }
       }
     }
 
-    // Smart insights focused on the day
+    // Smart insights
     const insights = this.generateFocusedDailyInsights({
       events: todaysEvents,
       tasks: todaysTasks,
       overdue: overdueTasks,
       timezone: userTimezone,
-      projectCount: Object.keys(await this.generateProjectRollup(allRelevantTasks)).length
+      projectCount: Object.keys(await this.generateProjectRollup(allRelevantTasks, overdueTasks, todaysTasks).byProject || {}).length
     });
     
     if (insights) {
@@ -583,6 +599,73 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
     });
   }
 }
+
+// UPDATED: Enhanced project rollup with separate task categorization
+async generateProjectRollup(allTasks, overdueTasks, todaysTasks) {
+  const rollup = {
+    byProject: {},
+    hasMultipleProjects: false,
+    totalProjects: 0
+  };
+  
+  const projectCache = new Map();
+  
+  // Organize tasks by project
+  for (const task of allTasks) {
+    const projectInfo = this.getTaskProjectInfo(task);
+    const projectName = projectInfo.name;
+    
+    if (!rollup.byProject[projectName]) {
+      rollup.byProject[projectName] = {
+        allTasks: [],
+        overdueTasks: [],
+        todayTasks: [],
+        projectId: projectInfo.id,
+        url: null
+      };
+      
+      // Get Asana project URL
+      if (projectInfo.id && !projectCache.has(projectInfo.id)) {
+        const projectUrl = `https://app.asana.com/0/${projectInfo.id}`;
+        projectCache.set(projectInfo.id, projectUrl);
+      }
+      rollup.byProject[projectName].url = projectCache.get(projectInfo.id);
+    }
+    
+    // Add to appropriate task lists
+    rollup.byProject[projectName].allTasks.push(task);
+    
+    if (overdueTasks.some(o => o.gid === task.gid)) {
+      rollup.byProject[projectName].overdueTasks.push(task);
+    }
+    
+    if (todaysTasks.some(t => t.gid === task.gid)) {
+      rollup.byProject[projectName].todayTasks.push(task);
+    }
+  }
+  
+  rollup.totalProjects = Object.keys(rollup.byProject).length;
+  rollup.hasMultipleProjects = rollup.totalProjects > 1;
+  
+  return rollup;
+}
+
+// UPDATED: Better project info extraction
+getTaskProjectInfo(task) {
+  if (task.projects && task.projects.length > 0) {
+    const project = task.projects[0]; // Use primary project
+    return {
+      name: project.name || 'Unnamed Project',
+      id: project.gid
+    };
+  }
+  return {
+    name: 'No Project',
+    id: null
+  };
+}
+
+
 
 // NEW: Generate project rollup with Asana board links
 async generateProjectRollup(tasks) {
