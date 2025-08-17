@@ -102,7 +102,7 @@ class WorkoutHandler {
       let message = `Perfect workouts for you:\n\n`;
 
       topRecommendations.forEach((workout) => {
-        message += `*${workout.title}*\n`;
+        message += `*<${workout.url}|${workout.title}>*\n`;
         message += `_${workout.instructor} • ${workout.duration} • ${workout.discipline}_\n`;
         if (workout.difficulty !== 'Not Rated') {
           message += `Difficulty: ${workout.difficulty}/10`;
@@ -110,7 +110,7 @@ class WorkoutHandler {
         if (workout.rating !== 'New') {
           message += ` • Rating: ${workout.rating}/10`;
         }
-        message += `\n${workout.url}\n\n`;
+        message += `\n\n`;
       });
 
       // Add personalized suggestion based on time/energy
