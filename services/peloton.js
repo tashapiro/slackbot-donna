@@ -124,15 +124,33 @@ class PelotonService {
       }
 
       if (duration) {
-        // Duration filter (in seconds or as range)
+        // Duration filter - Peloton uses duration_range_id or class_type filtering
+        // Let's try multiple approaches since the API documentation isn't clear
         if (typeof duration === 'number') {
-          // Convert minutes to seconds and create a range
-          const durationSeconds = duration * 60;
-          const rangeLow = Math.max(0, durationSeconds - 300); // ±5 minutes
-          const rangeHigh = durationSeconds + 300;
-          params.append('duration', `${rangeLow}-${rangeHigh}`);
-        } else {
-          params.append('duration', duration);
+          // Try different parameter names that Peloton might use
+          const durationMinutes = duration;
+          
+          // Method 1: Try duration in seconds
+          const durationSeconds = durationMinutes * 60;
+          params.append('duration', durationSeconds.toString());
+          
+          // Method 2: Try duration range (common values: 1200=20min, 1800=30min, 2700=45min, 3600=60min)
+          const commonDurations = {
+            5: 300, 10: 600, 15: 900, 20: 1200, 25: 1500, 30: 1800, 
+            35: 2100, 40: 2400, 45: 2700, 50: 3000, 60: 3600, 75: 4500, 90: 5400
+          };
+          
+          // Find closest standard duration
+          const standardDuration = Object.keys(commonDurations)
+            .map(Number)
+            .reduce((closest, curr) => 
+              Math.abs(curr - durationMinutes) < Math.abs(closest - durationMinutes) ? curr : closest
+            );
+          
+          const durationId = commonDurations[standardDuration];
+          if (durationId) {
+            params.append('duration_range_id', durationId.toString());
+          }
         }
       }
 
@@ -164,6 +182,7 @@ class PelotonService {
       // Use the correct endpoint for browsing archived classes
       const url = `${this.baseUrl}/api/v2/ride/archived?${params}`;
       console.log(`Searching Peloton classes: ${url}`);
+      console.log(`Search parameters:`, Object.fromEntries(params));
 
       const response = await fetch(url, {
         method: 'GET',
@@ -179,8 +198,22 @@ class PelotonService {
       const data = await response.json();
       
       // The response structure includes 'data' array with class information
-      const classes = data.data || [];
-      console.log(`Found ${classes.length} Peloton classes`);
+      let classes = data.data || [];
+      console.log(`Found ${classes.length} Peloton classes from API`);
+      
+      // Client-side duration filtering as backup (since API params might not work)
+      if (duration && typeof duration === 'number') {
+        const targetDurationSeconds = duration * 60;
+        const tolerance = 300; // 5 minutes tolerance
+        
+        classes = classes.filter(cls => {
+          const classDuration = cls.duration || cls.length || 0;
+          const diff = Math.abs(classDuration - targetDurationSeconds);
+          return diff <= tolerance;
+        });
+        
+        console.log(`After duration filtering (${duration} min ±5): ${classes.length} classes`);
+      }
       
       return classes.map(cls => this.formatClass(cls));
     } catch (error) {
@@ -340,15 +373,26 @@ class PelotonService {
   formatClass(cls) {
     if (!cls) return null;
 
+    // Better instructor name extraction
+    let instructorName = 'Unknown Instructor';
+    if (cls.instructor?.name) {
+      instructorName = cls.instructor.name;
+    } else if (cls.instructor_names && cls.instructor_names.length > 0) {
+      instructorName = cls.instructor_names[0];
+    } else if (cls.instructor_id) {
+      // Could fetch instructor details separately if needed
+      instructorName = 'Instructor';
+    }
+
     return {
       id: cls.id,
       title: cls.title || cls.name || 'Untitled Class',
-      instructor: cls.instructor?.name || 'Unknown Instructor',
+      instructor: instructorName,
       duration: this.formatDuration(cls.duration || cls.length || 0),
       discipline: cls.fitness_discipline || cls.ride_type_id || 'cycling',
-      difficulty: cls.difficulty_rating_avg?.toFixed(1) || 'Not Rated',
+      difficulty: cls.difficulty_rating_avg ? cls.difficulty_rating_avg.toFixed(1) : 'Not Rated',
       description: cls.description || '',
-      rating: cls.overall_rating_avg?.toFixed(1) || 'New',
+      rating: cls.overall_rating_avg ? cls.overall_rating_avg.toFixed(1) : 'New',
       // URL format based on the class type and ID
       url: `https://members.onepeloton.com/classes/${cls.fitness_discipline || 'cycling'}?modal=classDetailsModal&classId=${cls.id}`,
       originalAirTime: cls.original_air_time,
