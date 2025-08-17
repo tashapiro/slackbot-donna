@@ -325,13 +325,19 @@ class PelotonService {
     console.log(`Getting workout recommendations: ${duration ? duration + ' min' : 'any duration'}, ${discipline || 'any discipline'}, ${instructor || 'any instructor'}`);
 
     try {
+      // Use randomized sort order for variety
+      const sortOptions = ['original_air_time', 'popularity', 'difficulty_rating_avg', 'overall_rating_avg'];
+      const randomSort = sortOptions[Math.floor(Math.random() * sortOptions.length)];
+      
+      console.log(`Using random sort order: ${randomSort}`);
+
       // Search for classes matching criteria
       const classes = await this.searchClasses({
         discipline,
         duration,
         instructor,
-        limit,
-        sort_by: 'popularity' // Get popular classes for better recommendations
+        limit: limit * 2, // Get more results to have better randomization
+        sort_by: randomSort
       });
 
       if (classes.length === 0 && (duration || discipline || instructor)) {
@@ -344,7 +350,7 @@ class PelotonService {
             discipline,
             duration,
             limit,
-            sort_by: 'popularity'
+            sort_by: 'popularity' // Use popularity for fallback
           });
         } else if (duration && discipline) {
           // Try without duration filter
@@ -362,7 +368,8 @@ class PelotonService {
         }
       }
 
-      return classes;
+      // Return only the requested number after randomization
+      return classes.slice(0, limit);
     } catch (error) {
       console.error('Error getting workout recommendations:', error);
       throw error;
@@ -379,8 +386,8 @@ class PelotonService {
     }
 
     try {
-      // This endpoint doesn't require authentication
-      const response = await fetch(`${this.baseUrl}/api/instructor`, {
+      // Fetch ALL instructors with increased limit
+      const response = await fetch(`${this.baseUrl}/api/instructor?limit=100`, {
         method: 'GET',
         headers: {
           'Accept': 'application/json'
@@ -394,11 +401,22 @@ class PelotonService {
       const data = await response.json();
       const instructors = data.data || [];
       
-      console.log(`Fetched ${instructors.length} instructors from API`);
+      console.log(`Fetched ${instructors.length} instructors from API (with limit=100)`);
       
       // Debug: log first few instructor names
       if (instructors.length > 0) {
         console.log(`Sample instructors: ${instructors.slice(0, 10).map(i => i.name).join(', ')}`);
+        
+        // Check if we got the popular ones
+        const codysFound = instructors.filter(i => i.name.toLowerCase().includes('cody'));
+        const mattsFound = instructors.filter(i => i.name.toLowerCase().includes('matt'));
+        
+        if (codysFound.length > 0) {
+          console.log(`Found Cody instructors: ${codysFound.map(i => i.name).join(', ')}`);
+        }
+        if (mattsFound.length > 0) {
+          console.log(`Found Matt instructors: ${mattsFound.map(i => i.name).join(', ')}`);
+        }
       }
       
       dataStore.setCachedData(cacheKey, instructors);
