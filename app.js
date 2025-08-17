@@ -13,12 +13,17 @@ const savvyCalService = require('./services/savvycal');
 const togglService = require('./services/toggl');
 const asanaService = require('./services/asana');
 const googleCalendarService = require('./services/googleCalendar');
+const pelotonService = require('./services/peloton');
+
+
 
 // Handler imports
 const schedulingHandler = require('./handlers/scheduling');
 const timeTrackingHandler = require('./handlers/timeTracking');
 const projectHandler = require('./handlers/projects');
 const calendarHandler = require('./handlers/calendar');
+const workoutHandler = require('./handlers/workout');
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Environment & Configuration
@@ -540,6 +545,19 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       case 'delete_meeting':
         await ErrorHandler.wrapHandler(calendarHandler.handleDeleteMeeting.bind(calendarHandler), 'Google Calendar')(params);
         break;
+
+        // Workout intents
+        case 'workout_recommendation':
+          await ErrorHandler.wrapHandler(workoutHandler.handleWorkoutRecommendation.bind(workoutHandler), 'Peloton')(params);
+          break;
+          
+        case 'schedule_workout':
+          await ErrorHandler.wrapHandler(workoutHandler.handleScheduleWorkout.bind(workoutHandler), 'Peloton')(params);
+          break;
+          
+        case 'workout_history':
+          await ErrorHandler.wrapHandler(workoutHandler.handleWorkoutHistory.bind(workoutHandler), 'Peloton')(params);
+          break;
         
       // General conversation - ENHANCED with modern email generation
       case 'general_chat':
