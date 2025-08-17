@@ -104,23 +104,33 @@ class PelotonService {
       const params = new URLSearchParams({
         limit: limit.toString(),
         page: page.toString(),
-        sort_by: sort_by
+        sort_by: sort_by,
+        // Try to include instructor details in the response
+        joins: 'instructor'
       });
 
       // Add filters based on parameters
       if (discipline) {
-        // Map discipline to browse_category if needed
+        // Map discipline to browse_category - try multiple parameter names
         const disciplineMap = {
           'cycling': 'cycling',
           'strength': 'strength',
-          'yoga': 'yoga',
+          'yoga': 'yoga', 
           'meditation': 'meditation',
           'stretching': 'stretching',
           'running': 'running',
           'walking': 'walking',
           'cardio': 'cardio'
         };
-        params.append('browse_category', disciplineMap[discipline] || discipline);
+        
+        const mappedDiscipline = disciplineMap[discipline.toLowerCase()] || discipline;
+        
+        // Try different parameter names that Peloton might use
+        params.append('browse_category', mappedDiscipline);
+        params.append('fitness_discipline', mappedDiscipline);
+        params.append('class_type', mappedDiscipline);
+        
+        console.log(`Filtering by discipline: ${discipline} -> ${mappedDiscipline}`);
       }
 
       if (duration) {
@@ -201,21 +211,47 @@ class PelotonService {
       let classes = data.data || [];
       console.log(`Found ${classes.length} Peloton classes from API`);
       
+      // Client-side discipline filtering as backup (in case API params don't work)
+      if (discipline) {
+        const originalCount = classes.length;
+        classes = classes.filter(cls => {
+          const classDiscipline = (cls.fitness_discipline || cls.ride_type_id || '').toLowerCase();
+          const targetDiscipline = discipline.toLowerCase();
+          return classDiscipline.includes(targetDiscipline) || targetDiscipline.includes(classDiscipline);
+        });
+        console.log(`After discipline filtering (${discipline}): ${classes.length} classes (was ${originalCount})`);
+      }
+      
       // Client-side duration filtering as backup (since API params might not work)
       if (duration && typeof duration === 'number') {
         const targetDurationSeconds = duration * 60;
         const tolerance = 300; // 5 minutes tolerance
         
+        const originalCount = classes.length;
         classes = classes.filter(cls => {
           const classDuration = cls.duration || cls.length || 0;
           const diff = Math.abs(classDuration - targetDurationSeconds);
           return diff <= tolerance;
         });
         
-        console.log(`After duration filtering (${duration} min ±5): ${classes.length} classes`);
+        console.log(`After duration filtering (${duration} min ±5): ${classes.length} classes (was ${originalCount})`);
       }
       
-      return classes.map(cls => this.formatClass(cls));
+      // Randomize the results to avoid showing the same classes repeatedly
+      if (classes.length > 0) {
+        classes = this.shuffleArray([...classes]);
+      }
+      
+      // Format classes (now async due to instructor lookups)
+      const formattedClasses = [];
+      for (const cls of classes) {
+        const formatted = await this.formatClass(cls);
+        if (formatted) {
+          formattedClasses.push(formatted);
+        }
+      }
+      
+      return formattedClasses;
     } catch (error) {
       console.error('Error searching classes:', error);
       throw error;
@@ -370,7 +406,7 @@ class PelotonService {
   }
 
   // Format class data for display
-  formatClass(cls) {
+  async formatClass(cls) {
     if (!cls) return null;
 
     // Better instructor name extraction
@@ -380,8 +416,17 @@ class PelotonService {
     } else if (cls.instructor_names && cls.instructor_names.length > 0) {
       instructorName = cls.instructor_names[0];
     } else if (cls.instructor_id) {
-      // Could fetch instructor details separately if needed
-      instructorName = 'Instructor';
+      // Try to get instructor name from cached instructor list
+      try {
+        const instructors = await this.getInstructors();
+        const instructor = instructors.find(inst => inst.id === cls.instructor_id);
+        if (instructor?.name) {
+          instructorName = instructor.name;
+        }
+      } catch (error) {
+        console.log('Could not lookup instructor name:', error.message);
+        instructorName = 'Instructor';
+      }
     }
 
     return {
@@ -400,6 +445,16 @@ class PelotonService {
       totalRatings: cls.total_rating_count || 0,
       isLiveNow: cls.is_live_in_studio_only || false
     };
+  }
+
+  // Helper: Shuffle array for randomized results
+  shuffleArray(array) {
+    const shuffled = [...array];
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+    }
+    return shuffled;
   }
 
   // Helper: Format duration display

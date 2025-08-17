@@ -58,7 +58,19 @@ class WorkoutHandler {
             limit: 3
           });
           
-          allRecommendations.push(...recommendations);
+          if (recommendations.length > 0) {
+            allRecommendations.push(...recommendations);
+          } else {
+            console.log(`No exact matches for ${type} at ${duration} minutes, trying broader search...`);
+            // Fallback: try without duration filter
+            const fallbackRecommendations = await pelotonService.getWorkoutRecommendations({
+              discipline: type,
+              timeOfDay: time_of_day,
+              energyLevel: energy_level,
+              limit: 2
+            });
+            allRecommendations.push(...fallbackRecommendations);
+          }
         } catch (error) {
           console.log(`No ${type} classes found, trying next type...`);
         }
@@ -81,30 +93,35 @@ class WorkoutHandler {
         return await client.chat.postMessage({
           channel,
           thread_ts,
-          text: `Couldn't find any classes matching your criteria right now. Try asking for a specific instructor or different duration. You can also check the Peloton app directly.`
+          text: `Couldn't find any ${duration ? duration + '-minute ' : ''}classes matching your criteria right now. Try asking for a different duration or check the Peloton app directly for more options.`
         });
       }
 
       // Format the recommendations
       const topRecommendations = allRecommendations.slice(0, 3);
-      let message = `*Perfect workouts for you:*\n\n`;
+      let message = `Perfect workouts for you:\n\n`;
 
-      topRecommendations.forEach((workout, index) => {
-        message += `${index + 1}. **${workout.title}**\n`;
-        message += `   _${workout.instructor} • ${workout.duration} • ${workout.discipline}_\n`;
+      topRecommendations.forEach((workout) => {
+        message += `*${workout.title}*\n`;
+        message += `_${workout.instructor} • ${workout.duration} • ${workout.discipline}_\n`;
         if (workout.difficulty !== 'Not Rated') {
-          message += `   Difficulty: ${workout.difficulty}/10`;
+          message += `Difficulty: ${workout.difficulty}/10`;
         }
         if (workout.rating !== 'New') {
           message += ` • Rating: ${workout.rating}/10`;
         }
-        message += `\n   ${workout.url}\n\n`;
+        message += `\n${workout.url}\n\n`;
       });
 
       // Add personalized suggestion based on time/energy
       const suggestions = this.getWorkoutSuggestion(time_of_day, energy_level, duration);
       if (suggestions) {
         message += `💡 _${suggestions}_\n\n`;
+      }
+
+      // Add note about duration filtering if we filtered by duration
+      if (duration && parseInt(duration) !== 30) {
+        message += `_Filtered for ${duration}-minute classes. Want different durations? Just ask!_\n\n`;
       }
 
       // Offer to schedule
@@ -195,7 +212,7 @@ class WorkoutHandler {
         timeZone: userTimezone
       });
 
-      let message = `✅ Workout scheduled: *${event.summary}*\n`;
+      let message = `✅ Workout scheduled: ${event.summary}\n`;
       message += `📅 ${dateStr} at ${timeStr}\n`;
       message += `🏃‍♀️ Time to get moving! I already took care of your calendar.`;
 
@@ -270,7 +287,7 @@ class WorkoutHandler {
         const discipline = rideInfo.fitness_discipline || 'cycling';
         const duration = rideInfo.duration ? Math.round(rideInfo.duration / 60) : '?';
 
-        message += `${index + 1}. **${title}**\n`;
+        message += `${index + 1}. *${title}*\n`;
         message += `   _${instructor} • ${duration} min • ${discipline} • ${dateStr}_\n`;
         
         // Add performance stats if available
@@ -288,7 +305,7 @@ class WorkoutHandler {
 
       // Add overview stats if available
       if (overview && overview.total_workouts) {
-        message += `📈 *Total Stats:* ${overview.total_workouts} workouts completed`;
+        message += `📈 Total Stats: ${overview.total_workouts} workouts completed`;
         if (overview.total_workout_days) {
           message += ` across ${overview.total_workout_days} days`;
         }
