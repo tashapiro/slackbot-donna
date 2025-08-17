@@ -198,6 +198,36 @@ Recognize these patterns as calendar_rundown intent:
 - "meetings this week"
 - "calendar summary"
 
+WORKOUTS (Peloton):
+- "workout_recommendation" -> slots: { "duration": number?, "workout_type": string?, "time_of_day": string?, "energy_level": string?, "when": string? }
+- "schedule_workout" -> slots: { "workout_title": string?, "workout_duration": number?, "date": string?, "time": string }
+- "workout_history" -> slots: { "period": string? }
+
+// Add these to the SLOT EXTRACTION INTELLIGENCE section:
+WORKOUT RECOGNITION PATTERNS:
+Recognize these patterns for workout_recommendation intent:
+- "recommend a workout"
+- "suggest a Peloton class"
+- "what workout should I do"
+- "I need a 30 minute workout"
+- "suggest a strength workout"
+- "recommend a morning yoga class"
+- "I have 20 minutes for a workout"
+- "high energy cycling class"
+- "chill evening workout"
+
+Recognize these patterns for schedule_workout intent:
+- "schedule workout at 7am"
+- "block time for Peloton at 6pm"
+- "schedule 45 minute workout tomorrow"
+- "book workout time this afternoon"
+
+Recognize these patterns for workout_history intent:
+- "show my workout history"
+- "what workouts did I do this week"
+- "my recent Peloton workouts"
+- "workout stats"
+
 CLARIFICATION RULES:
 - Use "missing" array for clarifying questions when genuinely ambiguous
 - Don't ask for clarification if intent is reasonably clear from context
