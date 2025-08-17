@@ -216,6 +216,31 @@ Recognize these patterns for workout_recommendation intent:
 - "high energy cycling class"
 - "chill evening workout"
 
+**Workout Request Examples (CRITICAL - extract workout_type properly):**
+- "recommend a 30min yoga workout" → workout_recommendation with duration=30, workout_type="yoga"
+- "suggest a strength class" → workout_recommendation with workout_type="strength" 
+- "30 minute cycling" → workout_recommendation with duration=30, workout_type="cycling"
+- "recommend a 45min cycling class with Cody Rigsby" → workout_recommendation with duration=45, workout_type="cycling", instructor="Cody Rigsby"
+- "find me some yoga" → workout_recommendation with workout_type="yoga"
+- "20 minute workout" → workout_recommendation with duration=20 (no specific type)
+- "I want to do strength training" → workout_recommendation with workout_type="strength"
+- "cycling with Emma Lovewell" → workout_recommendation with workout_type="cycling", instructor="Emma Lovewell"
+- "recommend a workout" → workout_recommendation (no specific parameters)
+
+**CRITICAL EXTRACTION RULES:**
+- ALWAYS look for workout types: yoga, strength, cycling, running, walking, stretching, meditation, cardio
+- Extract duration numbers: "30min", "20 minute", "45 minutes" → duration: 30, 20, 45
+- Extract instructor names: "with [Name]", "by [Name]" → instructor: "[Name]"
+- Be flexible with variations: "strength training" = "strength", "bike" = "cycling"
+
+**Workout Type Mapping:**
+- yoga, stretching, meditation → workout_type: "yoga", "stretching", "meditation"
+- strength, strength training, weights → workout_type: "strength"  
+- cycling, bike, spin → workout_type: "cycling"
+- running, run, tread → workout_type: "running"
+- walking, walk → workout_type: "walking"
+- cardio → workout_type: "cardio"
+
 Recognize these patterns for schedule_workout intent:
 - "schedule workout at 7am"
 - "block time for Peloton at 6pm"

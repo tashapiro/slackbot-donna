@@ -8,17 +8,13 @@ class WorkoutHandler {
   // Handle workout recommendation requests
   async handleWorkoutRecommendation({ slots, client, channel, thread_ts, userId }) {
     try {
-      const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
-      
       const { 
-        duration = 30,
+        duration,
         workout_type,
-        time_of_day = 'anytime',
-        energy_level = 'medium',
-        when = 'now'
+        instructor
       } = slots;
 
-      console.log(`Generating workout recommendation for ${userId}: ${duration}min ${workout_type || 'any'} workout, ${energy_level} energy, ${time_of_day}`);
+      console.log(`Generating workout recommendation for ${userId}: ${duration ? duration + 'min' : 'any duration'} ${workout_type || 'any type'} workout${instructor ? ' with ' + instructor : ''}`);
 
       // Check if Peloton is configured
       if (!pelotonService.isConfigured) {
@@ -29,79 +25,96 @@ class WorkoutHandler {
         });
       }
 
-      // Show "thinking" message
+      // Donna's critical thinking: Handle different scenarios
+      if (!duration && !workout_type && !instructor) {
+        // No specifics at all - ask for preference
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'What kind of workout are you in the mood for? I can find cycling, strength, yoga, running, or any other discipline. Just tell me what sounds good.'
+        });
+      }
+
+      if (workout_type && !duration && !instructor) {
+        // Discipline only - suggest popular durations
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: `Great choice on ${workout_type}! How long do you want to go? Popular options are 20, 30, or 45 minutes. Or just say "surprise me" and I'll find something good.`
+        });
+      }
+
+      if (duration && !workout_type && !instructor) {
+        // Duration only - suggest popular disciplines
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: `Perfect, ${duration} minutes is a solid block of time. What type of workout? I can find cycling, strength training, yoga, running, or anything else you're feeling.`
+        });
+      }
+
+      // Show "thinking" message for specific requests
       await client.chat.postMessage({
         channel,
         thread_ts,
         text: 'Let me find the perfect workout for you... 🏃‍♀️'
       });
 
-      // Determine workout types to search for
-      let workoutTypes = [];
-      if (workout_type) {
-        workoutTypes = [workout_type.toLowerCase()];
-      } else {
-        // Get recommendations based on time and energy
-        workoutTypes = pelotonService.getWorkoutTypeRecommendations(time_of_day, energy_level);
-      }
-
-      let allRecommendations = [];
-      
-      // Try to get recommendations for each workout type
-      for (const type of workoutTypes.slice(0, 2)) { // Limit to 2 types to avoid API overload
+      // Look up instructor if specified
+      let instructorId = null;
+      if (instructor) {
         try {
-          const recommendations = await pelotonService.getWorkoutRecommendations({
-            duration: parseInt(duration),
-            discipline: type,
-            timeOfDay: time_of_day,
-            energyLevel: energy_level,
-            limit: 3
-          });
-          
-          if (recommendations.length > 0) {
-            allRecommendations.push(...recommendations);
+          const foundInstructor = await pelotonService.findInstructor(instructor);
+          if (foundInstructor) {
+            instructorId = foundInstructor.id;
+            console.log(`Found instructor: ${foundInstructor.name} (ID: ${foundInstructor.id})`);
           } else {
-            console.log(`No exact matches for ${type} at ${duration} minutes, trying broader search...`);
-            // Fallback: try without duration filter
-            const fallbackRecommendations = await pelotonService.getWorkoutRecommendations({
-              discipline: type,
-              timeOfDay: time_of_day,
-              energyLevel: energy_level,
-              limit: 2
+            return await client.chat.postMessage({
+              channel,
+              thread_ts,
+              text: `Couldn't find instructor "${instructor}". Try checking the spelling or ask me to "find popular cycling instructors" to see who's available.`
             });
-            allRecommendations.push(...fallbackRecommendations);
           }
         } catch (error) {
-          console.log(`No ${type} classes found, trying next type...`);
+          console.log('Instructor lookup failed:', error.message);
         }
       }
 
-      if (allRecommendations.length === 0) {
-        // Fallback: try a very broad search
-        try {
-          allRecommendations = await pelotonService.getWorkoutRecommendations({
-            duration: parseInt(duration),
-            discipline: 'cycling', // Default fallback
-            limit: 3
-          });
-        } catch (error) {
-          console.error('Error getting fallback recommendations:', error);
-        }
+      // Get recommendations with simplified parameters
+      let recommendations = [];
+      try {
+        recommendations = await pelotonService.getWorkoutRecommendations({
+          duration: duration ? parseInt(duration) : null,
+          discipline: workout_type,
+          instructor: instructorId,
+          limit: 3
+        });
+      } catch (error) {
+        console.error('Error getting workout recommendations:', error);
       }
 
-      if (allRecommendations.length === 0) {
+      if (recommendations.length === 0) {
+        let message = `Couldn't find any classes matching those exact criteria.`;
+        
+        if (instructor) {
+          message += ` "${instructor}" might not have ${workout_type || 'classes'} in that length.`;
+        } else if (duration && workout_type) {
+          message += ` Try a different duration for ${workout_type} or check what's popular right now.`;
+        }
+        
+        message += ` Want me to suggest something similar?`;
+        
         return await client.chat.postMessage({
           channel,
           thread_ts,
-          text: `Couldn't find any ${duration ? duration + '-minute ' : ''}classes matching your criteria right now. Try asking for a different duration or check the Peloton app directly for more options.`
+          text: message
         });
       }
 
       // Format the recommendations
-      const topRecommendations = allRecommendations.slice(0, 3);
       let message = `Perfect workouts for you:\n\n`;
 
-      topRecommendations.forEach((workout) => {
+      recommendations.forEach((workout) => {
         message += `*<${workout.url}|${workout.title}>*\n`;
         message += `_${workout.instructor} • ${workout.duration} • ${workout.discipline}_\n`;
         if (workout.difficulty !== 'Not Rated') {
@@ -113,20 +126,16 @@ class WorkoutHandler {
         message += `\n\n`;
       });
 
-      // Add personalized suggestion based on time/energy
-      const suggestions = this.getWorkoutSuggestion(time_of_day, energy_level, duration);
-      if (suggestions) {
-        message += `💡 _${suggestions}_\n\n`;
+      // Add context-specific suggestion
+      if (instructor && recommendations[0]?.instructor) {
+        message += `💡 _${recommendations[0].instructor} always brings the energy!_\n\n`;
+      } else if (workout_type) {
+        message += `💡 _${workout_type.charAt(0).toUpperCase() + workout_type.slice(1)} is a great choice!_\n\n`;
       }
 
-      // Add note about duration filtering if we filtered by duration
-      if (duration && parseInt(duration) !== 30) {
-        message += `_Filtered for ${duration}-minute classes. Want different durations? Just ask!_\n\n`;
-      }
-
-      // Offer to schedule
-      if (when !== 'now') {
-        message += `Want me to block time on your calendar for one of these workouts?`;
+      // Offer to schedule if it's a specific request
+      if (duration && workout_type) {
+        message += `Want me to block ${duration} minutes on your calendar for this?`;
       }
 
       await client.chat.postMessage({
@@ -328,31 +337,6 @@ class WorkoutHandler {
         text: `Having trouble accessing your workout history: ${error.message}`
       });
     }
-  }
-
-  // Helper: Get personalized workout suggestions
-  getWorkoutSuggestion(timeOfDay, energyLevel, duration) {
-    const suggestions = {
-      morning: {
-        low: `Perfect for starting your day mindfully. A gentle ${duration}-minute session sets a positive tone.`,
-        medium: `Great choice for morning energy! This ${duration}-minute workout will energize your whole day.`,
-        high: `Bold morning choice! A ${duration}-minute intensive session - you'll feel unstoppable after this.`
-      },
-      afternoon: {
-        low: `Smart midday reset. A ${duration}-minute recovery session helps maintain focus for the rest of your day.`,
-        medium: `Perfect afternoon energy boost! ${duration} minutes to recharge and refocus.`,
-        high: `Afternoon intensity! This ${duration}-minute session will power you through the rest of your day.`
-      },
-      evening: {
-        low: `Excellent way to unwind. ${duration} minutes to decompress from your day.`,
-        medium: `Good evening balance - ${duration} minutes of movement without overdoing it before rest.`,
-        high: `High-energy evening session! Make sure you have time to cool down before bed.`
-      }
-    };
-
-    return suggestions[timeOfDay]?.[energyLevel] || 
-           `${duration} minutes of movement - exactly what you need right now.`;
-  }
 }
 
 module.exports = new WorkoutHandler();
