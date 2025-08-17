@@ -165,19 +165,20 @@ class PelotonService {
       }
 
       if (difficulty) {
-        // Difficulty level (typically 1-10 scale or beginner/intermediate/advanced)
+        // Only include difficulty if specifically requested - simplified approach
         if (typeof difficulty === 'string') {
           const difficultyMap = {
             'beginner': '1-3',
+            'easy': '1-4', 
             'intermediate': '4-7',
+            'medium': '4-7',
             'advanced': '8-10',
-            'easy': '1-4',
-            'medium': '5-7',
             'hard': '8-10'
           };
-          params.append('difficulty', difficultyMap[difficulty.toLowerCase()] || difficulty);
-        } else {
-          params.append('difficulty', difficulty.toString());
+          const mappedDifficulty = difficultyMap[difficulty.toLowerCase()];
+          if (mappedDifficulty) {
+            params.append('difficulty', mappedDifficulty);
+          }
         }
       }
 
@@ -316,45 +317,49 @@ class PelotonService {
 
   // Get workout recommendations based on user preferences and history
   async getWorkoutRecommendations({
-    duration = 30,
-    discipline = 'cycling',
-    timeOfDay = 'anytime',
-    energyLevel = 'medium',
+    duration = null,
+    discipline = null,
+    instructor = null,
     limit = 5
   } = {}) {
-    console.log(`Getting workout recommendations for ${duration} minutes, ${energyLevel} energy, ${timeOfDay}`);
+    console.log(`Getting workout recommendations: ${duration ? duration + ' min' : 'any duration'}, ${discipline || 'any discipline'}, ${instructor || 'any instructor'}`);
 
     try {
-      // Map energy level to difficulty
-      const difficultyMap = {
-        'low': 'beginner',
-        'medium': 'intermediate', 
-        'high': 'advanced',
-        'easy': 'beginner',
-        'moderate': 'intermediate',
-        'intense': 'advanced'
-      };
-
-      const difficulty = difficultyMap[energyLevel.toLowerCase()] || 'intermediate';
-
       // Search for classes matching criteria
       const classes = await this.searchClasses({
         discipline,
         duration,
-        difficulty,
+        instructor,
         limit,
         sort_by: 'popularity' // Get popular classes for better recommendations
       });
 
-      if (classes.length === 0) {
-        // Fallback: try broader search without difficulty filter
-        console.log('No classes found, trying broader search...');
-        return await this.searchClasses({
-          discipline,
-          duration,
-          limit,
-          sort_by: 'original_air_time'
-        });
+      if (classes.length === 0 && (duration || discipline || instructor)) {
+        // Fallback: try broader search by removing most restrictive filter
+        console.log('No exact matches found, trying broader search...');
+        
+        if (instructor) {
+          // Try without instructor filter first
+          return await this.searchClasses({
+            discipline,
+            duration,
+            limit,
+            sort_by: 'popularity'
+          });
+        } else if (duration && discipline) {
+          // Try without duration filter
+          return await this.searchClasses({
+            discipline,
+            limit,
+            sort_by: 'popularity'
+          });
+        } else if (discipline) {
+          // Try popular classes from any discipline
+          return await this.searchClasses({
+            limit,
+            sort_by: 'popularity'
+          });
+        }
       }
 
       return classes;
@@ -368,7 +373,10 @@ class PelotonService {
   async getInstructors() {
     const cacheKey = 'peloton_instructors';
     const cached = dataStore.getCachedData(cacheKey, 3600000); // 1 hour cache
-    if (cached) return cached;
+    if (cached) {
+      console.log(`Using cached instructors (${cached.length} total)`);
+      return cached;
+    }
 
     try {
       // This endpoint doesn't require authentication
@@ -386,6 +394,13 @@ class PelotonService {
       const data = await response.json();
       const instructors = data.data || [];
       
+      console.log(`Fetched ${instructors.length} instructors from API`);
+      
+      // Debug: log first few instructor names
+      if (instructors.length > 0) {
+        console.log(`Sample instructors: ${instructors.slice(0, 10).map(i => i.name).join(', ')}`);
+      }
+      
       dataStore.setCachedData(cacheKey, instructors);
       return instructors;
     } catch (error) {
@@ -394,39 +409,103 @@ class PelotonService {
     }
   }
 
-  // Find instructor by name
+  // Find instructor by name (improved with better matching)
   async findInstructor(name) {
     const instructors = await this.getInstructors();
     const searchName = name.toLowerCase().trim();
     
-    return instructors.find(instructor => 
-      instructor.name.toLowerCase().includes(searchName) ||
-      instructor.name.toLowerCase().split(' ').some(part => part.includes(searchName))
+    console.log(`Searching for instructor: "${name}"`);
+    console.log(`Available instructors: ${instructors.slice(0, 5).map(i => i.name).join(', ')}...`);
+    
+    // Try exact match first
+    let instructor = instructors.find(instructor => 
+      instructor.name.toLowerCase() === searchName
     );
+    
+    if (instructor) {
+      console.log(`Found exact match: ${instructor.name}`);
+      return instructor;
+    }
+    
+    // Try partial match (contains)
+    instructor = instructors.find(instructor => 
+      instructor.name.toLowerCase().includes(searchName) ||
+      searchName.includes(instructor.name.toLowerCase())
+    );
+    
+    if (instructor) {
+      console.log(`Found partial match: ${instructor.name}`);
+      return instructor;
+    }
+    
+    // Try matching individual words (for "Matt Wilpers" vs "Matthew Wilpers")
+    const searchWords = searchName.split(' ');
+    instructor = instructors.find(instructor => {
+      const instructorWords = instructor.name.toLowerCase().split(' ');
+      return searchWords.every(word => 
+        instructorWords.some(iWord => iWord.includes(word) || word.includes(iWord))
+      );
+    });
+    
+    if (instructor) {
+      console.log(`Found word match: ${instructor.name}`);
+      return instructor;
+    }
+    
+    console.log(`No instructor found for: "${name}"`);
+    return null;
   }
 
   // Format class data for display
   async formatClass(cls) {
     if (!cls) return null;
 
-    // Better instructor name extraction
+    // Better instructor name extraction with multiple fallback strategies
     let instructorName = 'Unknown Instructor';
+    
+    // Strategy 1: Direct instructor object
     if (cls.instructor?.name) {
       instructorName = cls.instructor.name;
-    } else if (cls.instructor_names && cls.instructor_names.length > 0) {
+      console.log(`Found instructor via cls.instructor.name: ${instructorName}`);
+    }
+    // Strategy 2: Instructor names array
+    else if (cls.instructor_names && cls.instructor_names.length > 0) {
       instructorName = cls.instructor_names[0];
-    } else if (cls.instructor_id) {
-      // Try to get instructor name from cached instructor list
+      console.log(`Found instructor via cls.instructor_names: ${instructorName}`);
+    }
+    // Strategy 3: Single instructor name field
+    else if (cls.instructor_name) {
+      instructorName = cls.instructor_name;
+      console.log(`Found instructor via cls.instructor_name: ${instructorName}`);
+    }
+    // Strategy 4: Lookup by instructor_id
+    else if (cls.instructor_id) {
       try {
         const instructors = await this.getInstructors();
         const instructor = instructors.find(inst => inst.id === cls.instructor_id);
         if (instructor?.name) {
           instructorName = instructor.name;
+          console.log(`Found instructor via ID lookup: ${instructorName}`);
+        } else {
+          console.log(`Instructor ID ${cls.instructor_id} not found in instructor list`);
         }
       } catch (error) {
-        console.log('Could not lookup instructor name:', error.message);
-        instructorName = 'Instructor';
+        console.log('Could not lookup instructor by ID:', error.message);
       }
+    }
+    // Strategy 5: Check for any field that might contain instructor info
+    else {
+      // Debug: log the structure to see what fields are available
+      console.log(`Class structure for debugging:`, {
+        id: cls.id,
+        title: cls.title || cls.name,
+        instructorFields: {
+          instructor: cls.instructor,
+          instructor_id: cls.instructor_id,
+          instructor_name: cls.instructor_name,
+          instructor_names: cls.instructor_names
+        }
+      });
     }
 
     return {
@@ -465,37 +544,6 @@ class PelotonService {
     const hours = Math.floor(minutes / 60);
     const remainingMinutes = minutes % 60;
     return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
-  }
-
-  // Helper: Get discipline-specific recommendations
-  getWorkoutTypeRecommendations(timeOfDay, energyLevel) {
-    const recommendations = {
-      morning: {
-        low: ['yoga', 'stretching', 'meditation'],
-        medium: ['cycling', 'strength'],
-        high: ['running', 'cycling']
-      },
-      afternoon: {
-        low: ['yoga', 'stretching'],
-        medium: ['strength', 'cycling'],
-        high: ['running', 'cycling', 'strength']
-      },
-      evening: {
-        low: ['yoga', 'stretching', 'meditation'],
-        medium: ['yoga', 'strength'],
-        high: ['cycling', 'strength']
-      },
-      anytime: {
-        low: ['yoga', 'stretching', 'meditation'],
-        medium: ['cycling', 'strength', 'yoga'],
-        high: ['cycling', 'running', 'strength']
-      }
-    };
-
-    const timeKey = timeOfDay.toLowerCase();
-    const energyKey = energyLevel.toLowerCase();
-    
-    return recommendations[timeKey]?.[energyKey] || recommendations.anytime[energyKey] || ['cycling'];
   }
 }
 

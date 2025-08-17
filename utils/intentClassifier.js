@@ -199,9 +199,22 @@ Recognize these patterns as calendar_rundown intent:
 - "calendar summary"
 
 WORKOUTS (Peloton):
-- "workout_recommendation" -> slots: { "duration": number?, "workout_type": string?, "time_of_day": string?, "energy_level": string?, "when": string? }
-- "schedule_workout" -> slots: { "workout_title": string?, "workout_duration": number?, "date": string?, "time": string }
+- "workout_recommendation" -> slots: { "duration": number?, "workout_type": string?, "instructor": string? }
+- "schedule_workout" -> slots: { "workout_title": string?, "workout_duration": number?, "date": string?, "time": string? }
 - "workout_history" -> slots: { "period": string? }
+- "list_instructors" -> slots: {} (debug intent)
+
+**Workout Request Examples (CRITICAL - extract workout_type properly):**
+- "recommend a 30min yoga workout" → workout_recommendation with duration=30, workout_type="yoga"
+- "suggest a strength class" → workout_recommendation with workout_type="strength" 
+- "30 minute cycling" → workout_recommendation with duration=30, workout_type="cycling"
+- "recommend a 45min cycling class with Cody Rigsby" → workout_recommendation with duration=45, workout_type="cycling", instructor="Cody Rigsby"
+- "30min ride with Matt Wilpers" → workout_recommendation with duration=30, workout_type="cycling", instructor="Matt Wilpers"
+- "find me some yoga" → workout_recommendation with workout_type="yoga"
+- "20 minute workout" → workout_recommendation with duration=20 (no specific type)
+- "cycling with Emma Lovewell" → workout_recommendation with workout_type="cycling", instructor="Emma Lovewell"
+- "list all instructors" → list_instructors (debug)
+- "show me available instructors" → list_instructors (debug)
 
 // Add these to the SLOT EXTRACTION INTELLIGENCE section:
 WORKOUT RECOGNITION PATTERNS:
@@ -216,16 +229,6 @@ Recognize these patterns for workout_recommendation intent:
 - "high energy cycling class"
 - "chill evening workout"
 
-**Workout Request Examples (CRITICAL - extract workout_type properly):**
-- "recommend a 30min yoga workout" → workout_recommendation with duration=30, workout_type="yoga"
-- "suggest a strength class" → workout_recommendation with workout_type="strength" 
-- "30 minute cycling" → workout_recommendation with duration=30, workout_type="cycling"
-- "recommend a 45min cycling class with Cody Rigsby" → workout_recommendation with duration=45, workout_type="cycling", instructor="Cody Rigsby"
-- "find me some yoga" → workout_recommendation with workout_type="yoga"
-- "20 minute workout" → workout_recommendation with duration=20 (no specific type)
-- "I want to do strength training" → workout_recommendation with workout_type="strength"
-- "cycling with Emma Lovewell" → workout_recommendation with workout_type="cycling", instructor="Emma Lovewell"
-- "recommend a workout" → workout_recommendation (no specific parameters)
 
 **CRITICAL EXTRACTION RULES:**
 - ALWAYS look for workout types: yoga, strength, cycling, running, walking, stretching, meditation, cardio

@@ -83,6 +83,8 @@ class WorkoutHandler {
       // Get recommendations with simplified parameters
       let recommendations = [];
       try {
+        console.log(`Calling getWorkoutRecommendations with: duration=${duration ? parseInt(duration) : null}, discipline=${workout_type}, instructor=${instructorId}`);
+        
         recommendations = await pelotonService.getWorkoutRecommendations({
           duration: duration ? parseInt(duration) : null,
           discipline: workout_type,
@@ -335,6 +337,66 @@ class WorkoutHandler {
         channel,
         thread_ts,
         text: `Having trouble accessing your workout history: ${error.message}`
+      });
+    }
+  }
+
+  // Debug helper: List all available instructors (temporary for troubleshooting)
+  async handleListInstructors({ client, channel, thread_ts }) {
+    try {
+      if (!pelotonService.isConfigured) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'Peloton integration isn\'t configured yet.'
+        });
+      }
+
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: 'Let me check all available instructors... 📋'
+      });
+
+      const instructors = await pelotonService.getInstructors();
+      
+      if (instructors.length === 0) {
+        return await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: 'No instructors found in the API response.'
+        });
+      }
+
+      // Group by discipline if available
+      let message = `Found ${instructors.length} total instructors:\n\n`;
+      
+      // Show first 20 for now
+      const displayInstructors = instructors.slice(0, 20);
+      displayInstructors.forEach((instructor, index) => {
+        message += `${index + 1}. ${instructor.name}`;
+        if (instructor.id) {
+          message += ` (ID: ${instructor.id})`;
+        }
+        message += '\n';
+      });
+      
+      if (instructors.length > 20) {
+        message += `\n_...and ${instructors.length - 20} more_`;
+      }
+
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: message
+      });
+
+    } catch (error) {
+      console.error('List instructors error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Error fetching instructors: ${error.message}`
       });
     }
   }

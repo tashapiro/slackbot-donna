@@ -546,7 +546,6 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
         await ErrorHandler.wrapHandler(calendarHandler.handleDeleteMeeting.bind(calendarHandler), 'Google Calendar')(params);
         break;
 
-        // Workout intents
         case 'workout_recommendation':
           await ErrorHandler.wrapHandler(workoutHandler.handleWorkoutRecommendation.bind(workoutHandler), 'Peloton')(params);
           break;
@@ -557,6 +556,11 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
           
         case 'workout_history':
           await ErrorHandler.wrapHandler(workoutHandler.handleWorkoutHistory.bind(workoutHandler), 'Peloton')(params);
+          break;
+        
+        // Temporary debug intent for troubleshooting instructors
+        case 'list_instructors':
+          await ErrorHandler.wrapHandler(workoutHandler.handleListInstructors.bind(workoutHandler), 'Peloton')(params);
           break;
         
       // General conversation - ENHANCED with modern email generation
