@@ -506,16 +506,6 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
         }, 'Asana')(params);
         break;
         
-      case 'daily_rundown':
-        await ErrorHandler.wrapHandler(async ({ client, channel, thread_ts, userId }) => {
-          const rundown = await projectHandler.generateDailyRundown();
-          await client.chat.postMessage({
-            channel,
-            thread_ts,
-            text: rundown
-          });
-        }, 'Asana')(params);
-        break;
         
       // Calendar intents - UPDATED with new handlers
       case 'check_calendar':

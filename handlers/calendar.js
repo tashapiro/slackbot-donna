@@ -407,123 +407,170 @@ class CalendarHandler {
   }
 
   // NEW: Comprehensive Daily Rundown Handler
-  async handleDailyRundown({ client, channel, thread_ts, userId }) {
-    try {
-      const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
-      console.log(`Generating daily rundown for user ${userId} in timezone: ${userTimezone}`);
+  // handlers/calendar.js - UPDATED: More focused daily rundown (replace the handleDailyRundown method)
 
-      // Get all data in parallel for speed
-      const [
-        todaysEvents,
-        todaysTasks, 
-        overdueTasks,
-        thisWeekTasks,
-        nextMeeting
-      ] = await Promise.all([
-        googleCalendarService.getEventsToday(userTimezone),
-        asanaService.getTasksDueToday(),
-        asanaService.getOverdueTasks(),
-        asanaService.getTasksDueThisWeek(),
-        this.getNextMeetingToday(userTimezone)
-      ]);
+// Replace the existing handleDailyRundown method with this focused version:
+async handleDailyRundown({ client, channel, thread_ts, userId }) {
+  try {
+    const userTimezone = await TimezoneHelper.getUserTimezone(client, userId);
+    console.log(`Generating daily rundown for user ${userId} in timezone: ${userTimezone}`);
 
-      // Build comprehensive rundown
-      let rundown = `*Good morning! Here's your day ahead:*\n\n`;
+    // Get all data in parallel for speed
+    const [
+      todaysEvents,
+      todaysTasks, 
+      overdueTasks,
+      nextMeeting
+    ] = await Promise.all([
+      googleCalendarService.getEventsToday(userTimezone),
+      asanaService.getTasksDueToday(),
+      asanaService.getOverdueTasks(),
+      this.getNextMeetingToday(userTimezone)
+    ]);
+
+    // Build comprehensive rundown
+    let rundown = `*Good morning! Here's your day ahead:*\n\n`;
+    
+    // Current time context
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true,
+      timeZone: userTimezone
+    });
+    const dateStr = now.toLocaleDateString('en-US', {
+      weekday: 'long',
+      month: 'long',
+      day: 'numeric',
+      timeZone: userTimezone
+    });
+    
+    rundown += `📅 *${dateStr}* • ${timeStr}\n\n`;
+
+    // Next meeting focus (prioritize this)
+    if (nextMeeting) {
+      const startTime = new Date(nextMeeting.start.dateTime);
+      const timeUntil = this.formatTimeUntil(startTime);
+      rundown += `🔜 *Next up:* ${nextMeeting.summary} ${timeUntil}\n`;
       
-      // Current time context
-      const now = new Date();
-      const timeStr = now.toLocaleTimeString('en-US', { 
-        hour: 'numeric', 
-        minute: '2-digit',
-        hour12: true,
-        timeZone: userTimezone
-      });
-      const dateStr = now.toLocaleDateString('en-US', {
-        weekday: 'long',
-        month: 'long',
-        day: 'numeric',
-        timeZone: userTimezone
-      });
-      
-      rundown += `📅 *${dateStr}* • ${timeStr}\n\n`;
-
-      // Next meeting focus
-      if (nextMeeting) {
-        const startTime = new Date(nextMeeting.start.dateTime);
-        const timeUntil = this.formatTimeUntil(startTime);
-        rundown += `🔜 *Next up:* ${nextMeeting.summary} ${timeUntil}\n`;
-        
-        const meetingLink = googleCalendarService.extractMeetingLink(nextMeeting);
-        if (meetingLink) {
-          rundown += `   🔗 ${meetingLink}\n`;
-        }
-        rundown += '\n';
+      const meetingLink = googleCalendarService.extractMeetingLink(nextMeeting);
+      if (meetingLink) {
+        rundown += `   🔗 ${meetingLink}\n`;
       }
+      rundown += '\n';
+    }
 
-      // High priority items first
-      if (overdueTasks.length > 0) {
-        rundown += `🚨 *Overdue Tasks* (${overdueTasks.length}):\n`;
-        rundown += overdueTasks.slice(0, 3).map(t => `   • ${t.name}`).join('\n');
-        if (overdueTasks.length > 3) {
-          rundown += `\n   _...and ${overdueTasks.length - 3} more_`;
+    // TODAY'S CALENDAR - This was missing!
+    if (todaysEvents.length > 0) {
+      rundown += `📆 *Today's Calendar* (${todaysEvents.length} meetings):\n`;
+      rundown += todaysEvents.map(e => {
+        const start = new Date(e.start.dateTime || e.start.date);
+        const timeStr = start.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true,
+          timeZone: userTimezone
+        });
+        return `   • ${timeStr} - ${e.summary}`;
+      }).join('\n') + '\n\n';
+    } else {
+      rundown += `📆 *Calendar:* No meetings today - perfect for deep work!\n\n`;
+    }
+
+    // FOCUSED overdue tasks (limit to top 3 only)
+    if (overdueTasks.length > 0) {
+      rundown += `🚨 *Priority: Overdue Tasks* (${overdueTasks.length} total):\n`;
+      rundown += overdueTasks.slice(0, 3).map(t => `   • ${t.name}`).join('\n');
+      if (overdueTasks.length > 3) {
+        rundown += `\n   _...and ${overdueTasks.length - 3} more overdue - tackle these first!_`;
+      }
+      rundown += '\n\n';
+    }
+
+    // FOCUSED today's tasks (limit to top 5)
+    if (todaysTasks.length > 0) {
+      const uniqueTodayTasks = todaysTasks.filter(t => !overdueTasks.some(o => o.gid === t.gid));
+      if (uniqueTodayTasks.length > 0) {
+        rundown += `✅ *Due Today* (${uniqueTodayTasks.length} total):\n`;
+        rundown += uniqueTodayTasks.slice(0, 5).map(t => `   • ${t.name}`).join('\n');
+        if (uniqueTodayTasks.length > 5) {
+          rundown += `\n   _...and ${uniqueTodayTasks.length - 5} more due today_`;
         }
         rundown += '\n\n';
       }
-
-      // Today's schedule
-      if (todaysEvents.length > 0) {
-        rundown += `📆 *Today's Calendar* (${todaysEvents.length} meetings):\n`;
-        rundown += todaysEvents.map(e => {
-          const start = new Date(e.start.dateTime || e.start.date);
-          const timeStr = start.toLocaleTimeString('en-US', { 
-            hour: 'numeric', 
-            minute: '2-digit',
-            hour12: true,
-            timeZone: userTimezone
-          });
-          return `   • ${timeStr} - ${e.summary}`;
-        }).join('\n') + '\n\n';
-      } else {
-        rundown += `📆 *Calendar:* No meetings today - perfect for deep work!\n\n`;
-      }
-
-      // Today's tasks
-      if (todaysTasks.length > 0) {
-        rundown += `✅ *Due Today* (${todaysTasks.length}):\n`;
-        rundown += todaysTasks.map(t => `   • ${t.name}`).join('\n') + '\n\n';
-      }
-
-      // Quick insights
-      const insights = this.generateDailyInsights({
-        events: todaysEvents,
-        tasks: todaysTasks,
-        overdue: overdueTasks,
-        timezone: userTimezone
-      });
-      
-      if (insights) {
-        rundown += `💡 *Donna's Take:*\n${insights}\n\n`;
-      }
-
-      // Call to action
-      rundown += `_Ready to tackle the day? I'm here when you need me._`;
-
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: rundown
-      });
-
-    } catch (error) {
-      console.error('Daily rundown error:', error);
-      await client.chat.postMessage({
-        channel,
-        thread_ts,
-        text: `Sorry, I had trouble generating your rundown: ${error.message}`
-      });
     }
-  }
 
+    // Smart insights focused on the day
+    const insights = this.generateFocusedDailyInsights({
+      events: todaysEvents,
+      tasks: todaysTasks,
+      overdue: overdueTasks,
+      timezone: userTimezone
+    });
+    
+    if (insights) {
+      rundown += `💡 *Donna's Take:*\n${insights}\n\n`;
+    }
+
+    // Call to action
+    rundown += `_Ready to tackle the day? I'm here when you need me._`;
+
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: rundown
+    });
+
+  } catch (error) {
+    console.error('Daily rundown error:', error);
+    await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Sorry, I had trouble generating your rundown: ${error.message}`
+    });
+  }
+}
+
+// NEW: More focused daily insights
+generateFocusedDailyInsights({ events, tasks, overdue, timezone }) {
+  const insights = [];
+  
+  // Calendar-first insights
+  if (events.length === 0) {
+    insights.push("Clear calendar today - perfect for tackling those overdue tasks.");
+  } else if (events.length >= 4) {
+    insights.push("Heavy meeting day - block 15-min buffers between calls.");
+  } else if (events.length >= 2) {
+    insights.push("Solid meeting schedule - good mix of collaboration and focus time.");
+  }
+  
+  // Task-focused insights
+  if (overdue.length > 10) {
+    insights.push("Major overdue backlog - consider doing a quick priority triage.");
+  } else if (overdue.length > 3) {
+    insights.push("Focus on clearing overdue tasks before starting new work.");
+  }
+  
+  if (tasks.length > 8) {
+    insights.push("Ambitious task list - pick your top 3 priorities for today.");
+  }
+  
+  // Time management
+  const now = new Date();
+  const hour = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getHours();
+  
+  if (hour < 9 && events.length > 0) {
+    insights.push("Early start - prep for your first meeting with coffee in hand.");
+  }
+  
+  // Back-to-back meeting detection
+  if (this.hasBackToBackMeetings(events, timezone)) {
+    insights.push("Back-to-back meetings ahead - schedule bathroom/stretch breaks.");
+  }
+  
+  return insights.length > 0 ? insights.join(' ') : null;
+}
   // NEW: Calendar rundown for specific periods
   async handleCalendarRundown({ slots, client, channel, thread_ts, userId }) {
     try {
