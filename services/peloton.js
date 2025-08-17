@@ -1,4 +1,4 @@
-// services/peloton.js - Peloton API integration for workout recommendations
+// services/peloton.js - FIXED: Correct Peloton API endpoints and structure
 const dataStore = require('../utils/dataStore');
 
 class PelotonService {
@@ -8,18 +8,41 @@ class PelotonService {
     this.baseUrl = 'https://api.onepeloton.com';
     this.sessionId = null;
     this.userId = null;
+    this.isConfigured = !!(this.username && this.password);
     
-    if (!this.username || !this.password) {
-      console.warn('PELOTON_USERNAME or PELOTON_PASSWORD not configured');
+    if (!this.isConfigured) {
+      console.warn('PELOTON_USERNAME and PELOTON_PASSWORD not configured');
     }
   }
 
-  // Authenticate with Peloton API
+  // Generate auth headers for authenticated requests
+  getAuthHeaders() {
+    if (!this.sessionId) {
+      throw new Error('Not authenticated - call authenticate() first');
+    }
+    
+    return {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Cookie': `peloton_session_id=${this.sessionId}`,
+      'peloton-platform': 'web'  // Required for many endpoints
+    };
+  }
+
+  // Authenticate and get session ID
   async authenticate() {
-    if (this.sessionId) {
-      // Check if session is still valid
-      const isValid = await this.validateSession();
-      if (isValid) return this.sessionId;
+    if (!this.isConfigured) {
+      throw new Error('Peloton credentials not configured');
+    }
+
+    // Check if we have a cached session that's still valid
+    const cacheKey = 'peloton_session';
+    const cached = dataStore.getCachedData(cacheKey, 3600000); // 1 hour cache
+    if (cached && cached.sessionId && cached.userId) {
+      this.sessionId = cached.sessionId;
+      this.userId = cached.userId;
+      console.log('Using cached Peloton session');
+      return true;
     }
 
     try {
@@ -27,7 +50,7 @@ class PelotonService {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'User-Agent': 'Donna/1.0'
+          'Accept': 'application/json'
         },
         body: JSON.stringify({
           username_or_email: this.username,
@@ -36,303 +59,303 @@ class PelotonService {
       });
 
       if (!response.ok) {
-        throw new Error(`Peloton auth failed: ${response.status} ${response.statusText}`);
+        const errorText = await response.text();
+        throw new Error(`Peloton login failed: ${response.status} ${errorText}`);
       }
 
-      const data = await response.json();
-      this.sessionId = data.session_id;
-      this.userId = data.user_id;
+      const authData = await response.json();
       
-      console.log('✅ Peloton authentication successful');
-      return this.sessionId;
-      
+      if (!authData.session_id || !authData.user_id) {
+        throw new Error('Peloton login response missing session_id or user_id');
+      }
+
+      this.sessionId = authData.session_id;
+      this.userId = authData.user_id;
+
+      // Cache the session
+      dataStore.setCachedData(cacheKey, {
+        sessionId: this.sessionId,
+        userId: this.userId
+      });
+
+      console.log(`✅ Peloton authentication successful for user ${this.userId}`);
+      return true;
     } catch (error) {
       console.error('Peloton authentication error:', error);
       throw error;
     }
   }
 
-  // Validate current session
-  async validateSession() {
-    if (!this.sessionId) return false;
-    
-    try {
-      const response = await fetch(`${this.baseUrl}/api/me`, {
-        headers: this.getAuthHeaders()
-      });
-      return response.ok;
-    } catch (error) {
-      return false;
-    }
-  }
-
-  // Get auth headers
-  getAuthHeaders() {
-    if (!this.sessionId) throw new Error('Not authenticated with Peloton');
-    
-    return {
-      'Cookie': `peloton_session_id=${this.sessionId}`,
-      'Content-Type': 'application/json',
-      'User-Agent': 'Donna/1.0'
-    };
-  }
-
-  // Get user's workout history
-  async getWorkoutHistory(limit = 20) {
-    await this.authenticate();
-    
-    const cacheKey = `peloton_history_${this.userId}`;
-    const cached = dataStore.getCachedData(cacheKey, 1800000); // 30 min cache
-    if (cached) return cached;
-
-    try {
-      const response = await fetch(`${this.baseUrl}/api/user/${this.userId}/workouts?limit=${limit}`, {
-        headers: this.getAuthHeaders()
-      });
-
-      if (!response.ok) {
-        throw new Error(`Peloton API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const workouts = data.data || [];
-      
-      dataStore.setCachedData(cacheKey, workouts);
-      return workouts;
-      
-    } catch (error) {
-      console.error('Error fetching workout history:', error);
-      throw error;
-    }
-  }
-
-  // Search for classes/workouts
+  // Search/browse classes (rides) - FIXED to use correct endpoint
   async searchClasses({
-    duration = null,        // [10, 15, 20, 30, 45, 60, 75, 90]
-    discipline = null,      // 'cycling', 'strength', 'yoga', 'meditation', 'stretching', 'running', 'walking'
-    instructor = null,      // instructor name
-    difficulty = null,      // 1-10 scale
-    limit = 20
+    discipline = 'cycling',
+    duration = null,
+    difficulty = null,
+    instructor = null,
+    class_type = null,
+    limit = 20,
+    page = 0,
+    sort_by = 'original_air_time'
   } = {}) {
     await this.authenticate();
 
-    const params = new URLSearchParams({
-      limit: limit.toString(),
-      browse_category: 'all'
-    });
-
-    if (duration) params.append('duration', duration.toString());
-    if (discipline) params.append('super_genre_id', this.getDisciplineId(discipline));
-    if (instructor) params.append('instructor_id', instructor);
-    if (difficulty) {
-      // Convert difficulty to Peloton's rating system
-      const minRating = Math.max(1, difficulty - 1);
-      const maxRating = Math.min(10, difficulty + 1);
-      params.append('rating_range_lower_bound', minRating.toString());
-      params.append('rating_range_upper_bound', maxRating.toString());
-    }
-
     try {
-      const response = await fetch(`${this.baseUrl}/api/ride?${params}`, {
+      // Build query parameters for the correct browse endpoint
+      const params = new URLSearchParams({
+        limit: limit.toString(),
+        page: page.toString(),
+        sort_by: sort_by
+      });
+
+      // Add filters based on parameters
+      if (discipline) {
+        // Map discipline to browse_category if needed
+        const disciplineMap = {
+          'cycling': 'cycling',
+          'strength': 'strength',
+          'yoga': 'yoga',
+          'meditation': 'meditation',
+          'stretching': 'stretching',
+          'running': 'running',
+          'walking': 'walking',
+          'cardio': 'cardio'
+        };
+        params.append('browse_category', disciplineMap[discipline] || discipline);
+      }
+
+      if (duration) {
+        // Duration filter (in seconds or as range)
+        if (typeof duration === 'number') {
+          // Convert minutes to seconds and create a range
+          const durationSeconds = duration * 60;
+          const rangeLow = Math.max(0, durationSeconds - 300); // ±5 minutes
+          const rangeHigh = durationSeconds + 300;
+          params.append('duration', `${rangeLow}-${rangeHigh}`);
+        } else {
+          params.append('duration', duration);
+        }
+      }
+
+      if (difficulty) {
+        // Difficulty level (typically 1-10 scale or beginner/intermediate/advanced)
+        if (typeof difficulty === 'string') {
+          const difficultyMap = {
+            'beginner': '1-3',
+            'intermediate': '4-7',
+            'advanced': '8-10',
+            'easy': '1-4',
+            'medium': '5-7',
+            'hard': '8-10'
+          };
+          params.append('difficulty', difficultyMap[difficulty.toLowerCase()] || difficulty);
+        } else {
+          params.append('difficulty', difficulty.toString());
+        }
+      }
+
+      if (instructor) {
+        params.append('instructor_id', instructor);
+      }
+
+      if (class_type) {
+        params.append('class_type_id', class_type);
+      }
+
+      // Use the correct endpoint for browsing archived classes
+      const url = `${this.baseUrl}/api/v2/ride/archived?${params}`;
+      console.log(`Searching Peloton classes: ${url}`);
+
+      const response = await fetch(url, {
+        method: 'GET',
         headers: this.getAuthHeaders()
       });
 
       if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`Peloton search error: ${response.status} ${errorText}`);
         throw new Error(`Peloton search error: ${response.status}`);
       }
 
       const data = await response.json();
-      return data.data || [];
       
+      // The response structure includes 'data' array with class information
+      const classes = data.data || [];
+      console.log(`Found ${classes.length} Peloton classes`);
+      
+      return classes.map(cls => this.formatClass(cls));
     } catch (error) {
       console.error('Error searching classes:', error);
       throw error;
     }
   }
 
-  // Get workout recommendations based on preferences and schedule
-  async getWorkoutRecommendations({
-    availableTime = 30,     // minutes available
-    workoutType = null,     // preferred type
-    energyLevel = 'medium', // 'low', 'medium', 'high'
-    timeOfDay = 'anytime'   // 'morning', 'afternoon', 'evening', 'anytime'
-  } = {}) {
-    console.log(`Getting workout recommendations for ${availableTime} minutes, ${energyLevel} energy, ${timeOfDay}`);
+  // Get user's workout history
+  async getUserWorkouts({ limit = 10, page = 0 } = {}) {
+    await this.authenticate();
 
     try {
-      // Get user's recent workout patterns
-      const recentWorkouts = await this.getWorkoutHistory(10);
-      const preferences = this.analyzeWorkoutPreferences(recentWorkouts);
+      const params = new URLSearchParams({
+        joins: 'ride,ride.instructor',
+        limit: limit.toString(),
+        page: page.toString(),
+        sort_by: '-created'
+      });
+
+      const url = `${this.baseUrl}/api/user/${this.userId}/workouts?${params}`;
       
-      // Determine workout types based on time of day and energy
-      const suitableTypes = this.getWorkoutTypesForContext(timeOfDay, energyLevel, workoutType);
-      
-      // Search for classes that fit the criteria
-      const recommendations = [];
-      
-      for (const type of suitableTypes) {
-        const classes = await this.searchClasses({
-          duration: this.findBestDuration(availableTime),
-          discipline: type,
-          difficulty: this.getDifficultyForEnergyLevel(energyLevel),
-          limit: 3
-        });
-        
-        // Score and rank classes
-        const scoredClasses = classes.map(cls => ({
-          ...cls,
-          score: this.scoreClass(cls, preferences, timeOfDay, energyLevel),
-          discipline_name: type
-        }));
-        
-        recommendations.push(...scoredClasses);
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getAuthHeaders()
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Peloton workout history error: ${response.status} ${errorText}`);
       }
+
+      const data = await response.json();
+      return data.data || [];
+    } catch (error) {
+      console.error('Error fetching workout history:', error);
+      throw error;
+    }
+  }
+
+  // Get user overview/stats
+  async getUserOverview() {
+    await this.authenticate();
+
+    try {
+      const url = `${this.baseUrl}/api/user/${this.userId}/overview`;
       
-      // Sort by score and return top recommendations
-      return recommendations
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 5)
-        .map(cls => this.formatClassRecommendation(cls));
-        
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: this.getAuthHeaders()
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Peloton user overview error: ${response.status} ${errorText}`);
+      }
+
+      return await response.json();
+    } catch (error) {
+      console.error('Error fetching user overview:', error);
+      throw error;
+    }
+  }
+
+  // Get workout recommendations based on user preferences and history
+  async getWorkoutRecommendations({
+    duration = 30,
+    discipline = 'cycling',
+    timeOfDay = 'anytime',
+    energyLevel = 'medium',
+    limit = 5
+  } = {}) {
+    console.log(`Getting workout recommendations for ${duration} minutes, ${energyLevel} energy, ${timeOfDay}`);
+
+    try {
+      // Map energy level to difficulty
+      const difficultyMap = {
+        'low': 'beginner',
+        'medium': 'intermediate', 
+        'high': 'advanced',
+        'easy': 'beginner',
+        'moderate': 'intermediate',
+        'intense': 'advanced'
+      };
+
+      const difficulty = difficultyMap[energyLevel.toLowerCase()] || 'intermediate';
+
+      // Search for classes matching criteria
+      const classes = await this.searchClasses({
+        discipline,
+        duration,
+        difficulty,
+        limit,
+        sort_by: 'popularity' // Get popular classes for better recommendations
+      });
+
+      if (classes.length === 0) {
+        // Fallback: try broader search without difficulty filter
+        console.log('No classes found, trying broader search...');
+        return await this.searchClasses({
+          discipline,
+          duration,
+          limit,
+          sort_by: 'original_air_time'
+        });
+      }
+
+      return classes;
     } catch (error) {
       console.error('Error getting workout recommendations:', error);
       throw error;
     }
   }
 
-  // Analyze user's workout preferences from history
-  analyzeWorkoutPreferences(workouts) {
-    const preferences = {
-      favoriteTypes: {},
-      averageDuration: 30,
-      favoriteInstructors: {},
-      preferredDifficulty: 5
-    };
+  // Get available instructors
+  async getInstructors() {
+    const cacheKey = 'peloton_instructors';
+    const cached = dataStore.getCachedData(cacheKey, 3600000); // 1 hour cache
+    if (cached) return cached;
 
-    if (workouts.length === 0) return preferences;
+    try {
+      // This endpoint doesn't require authentication
+      const response = await fetch(`${this.baseUrl}/api/instructor`, {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json'
+        }
+      });
 
-    // Analyze workout types
-    workouts.forEach(workout => {
-      const type = workout.fitness_discipline || 'unknown';
-      preferences.favoriteTypes[type] = (preferences.favoriteTypes[type] || 0) + 1;
-      
-      const instructor = workout.instructor?.name;
-      if (instructor) {
-        preferences.favoriteInstructors[instructor] = (preferences.favoriteInstructors[instructor] || 0) + 1;
+      if (!response.ok) {
+        throw new Error(`Peloton instructors error: ${response.status}`);
       }
-    });
 
-    // Calculate average duration
-    const totalDuration = workouts.reduce((sum, w) => sum + (w.total_duration || 0), 0);
-    preferences.averageDuration = Math.round(totalDuration / workouts.length / 60); // Convert to minutes
-
-    return preferences;
-  }
-
-  // Get suitable workout types for context
-  getWorkoutTypesForContext(timeOfDay, energyLevel, preferredType) {
-    if (preferredType) return [preferredType];
-
-    const morning = ['yoga', 'stretching', 'cycling', 'strength'];
-    const afternoon = ['cycling', 'strength', 'running'];
-    const evening = ['yoga', 'stretching', 'meditation'];
-    
-    const high = ['cycling', 'strength', 'running'];
-    const medium = ['cycling', 'yoga', 'strength'];
-    const low = ['yoga', 'stretching', 'meditation'];
-
-    let types = [];
-    
-    switch (timeOfDay) {
-      case 'morning': types = morning; break;
-      case 'afternoon': types = afternoon; break;
-      case 'evening': types = evening; break;
-      default: types = ['cycling', 'strength', 'yoga', 'stretching'];
-    }
-
-    // Filter by energy level
-    const energyTypes = energyLevel === 'high' ? high : 
-                       energyLevel === 'low' ? low : medium;
-    
-    return types.filter(type => energyTypes.includes(type));
-  }
-
-  // Find best duration for available time
-  findBestDuration(availableMinutes) {
-    const durations = [10, 15, 20, 30, 45, 60, 75, 90];
-    
-    // Find duration that fits with 5-minute buffer
-    const maxDuration = availableMinutes - 5;
-    const suitable = durations.filter(d => d <= maxDuration);
-    
-    return suitable.length > 0 ? suitable[suitable.length - 1] : 15; // Default to 15 min
-  }
-
-  // Get difficulty for energy level
-  getDifficultyForEnergyLevel(energyLevel) {
-    switch (energyLevel) {
-      case 'low': return 3;
-      case 'medium': return 5;
-      case 'high': return 7;
-      default: return 5;
+      const data = await response.json();
+      const instructors = data.data || [];
+      
+      dataStore.setCachedData(cacheKey, instructors);
+      return instructors;
+    } catch (error) {
+      console.error('Error fetching instructors:', error);
+      throw error;
     }
   }
 
-  // Score class based on preferences and context
-  scoreClass(cls, preferences, timeOfDay, energyLevel) {
-    let score = 5; // Base score
-
-    // Prefer classes matching user's favorite types
-    const type = cls.fitness_discipline;
-    if (preferences.favoriteTypes[type]) {
-      score += preferences.favoriteTypes[type] * 2;
-    }
-
-    // Prefer favorite instructors
-    const instructor = cls.instructor?.name;
-    if (instructor && preferences.favoriteInstructors[instructor]) {
-      score += preferences.favoriteInstructors[instructor];
-    }
-
-    // Prefer classes close to user's average duration
-    const durationDiff = Math.abs(cls.duration - preferences.averageDuration * 60);
-    score -= durationDiff / 300; // Reduce score for duration differences
-
-    // Boost highly rated classes
-    if (cls.overall_rating_avg) {
-      score += cls.overall_rating_avg;
-    }
-
-    return score;
+  // Find instructor by name
+  async findInstructor(name) {
+    const instructors = await this.getInstructors();
+    const searchName = name.toLowerCase().trim();
+    
+    return instructors.find(instructor => 
+      instructor.name.toLowerCase().includes(searchName) ||
+      instructor.name.toLowerCase().split(' ').some(part => part.includes(searchName))
+    );
   }
 
-  // Format class recommendation for display
-  formatClassRecommendation(cls) {
+  // Format class data for display
+  formatClass(cls) {
+    if (!cls) return null;
+
     return {
       id: cls.id,
-      title: cls.title,
-      instructor: cls.instructor?.name || 'Unknown',
-      duration: Math.round(cls.duration / 60), // Convert to minutes
-      difficulty: cls.difficulty_rating_avg || 'N/A',
-      discipline: cls.discipline_name || cls.fitness_discipline,
-      description: cls.description,
-      rating: cls.overall_rating_avg ? cls.overall_rating_avg.toFixed(1) : 'New',
-      url: `https://members.onepeloton.com/classes/${cls.fitness_discipline}?modal=classDetailsModal&classId=${cls.id}`
+      title: cls.title || cls.name || 'Untitled Class',
+      instructor: cls.instructor?.name || 'Unknown Instructor',
+      duration: this.formatDuration(cls.duration || cls.length || 0),
+      discipline: cls.fitness_discipline || cls.ride_type_id || 'cycling',
+      difficulty: cls.difficulty_rating_avg?.toFixed(1) || 'Not Rated',
+      description: cls.description || '',
+      rating: cls.overall_rating_avg?.toFixed(1) || 'New',
+      // URL format based on the class type and ID
+      url: `https://members.onepeloton.com/classes/${cls.fitness_discipline || 'cycling'}?modal=classDetailsModal&classId=${cls.id}`,
+      originalAirTime: cls.original_air_time,
+      classType: cls.class_type_name,
+      totalRatings: cls.total_rating_count || 0,
+      isLiveNow: cls.is_live_in_studio_only || false
     };
-  }
-
-  // Helper: Get discipline ID for API calls
-  getDisciplineId(discipline) {
-    const disciplineMap = {
-      'cycling': '5506b289-3a57-4394-8eb6-2b8b3f9b1f96',
-      'strength': '5506b289-3a57-4394-8eb6-2b8b3f9b1f95',
-      'yoga': '5506b289-3a57-4394-8eb6-2b8b3f9b1f97',
-      'meditation': '5506b289-3a57-4394-8eb6-2b8b3f9b1f98',
-      'stretching': '5506b289-3a57-4394-8eb6-2b8b3f9b1f99',
-      'running': '5506b289-3a57-4394-8eb6-2b8b3f9b1f9a',
-      'walking': '5506b289-3a57-4394-8eb6-2b8b3f9b1f9b'
-    };
-    return disciplineMap[discipline] || disciplineMap['cycling'];
   }
 
   // Helper: Format duration display
@@ -343,6 +366,37 @@ class PelotonService {
     const hours = Math.floor(minutes / 60);
     const remainingMinutes = minutes % 60;
     return remainingMinutes > 0 ? `${hours}h ${remainingMinutes}m` : `${hours}h`;
+  }
+
+  // Helper: Get discipline-specific recommendations
+  getWorkoutTypeRecommendations(timeOfDay, energyLevel) {
+    const recommendations = {
+      morning: {
+        low: ['yoga', 'stretching', 'meditation'],
+        medium: ['cycling', 'strength'],
+        high: ['running', 'cycling']
+      },
+      afternoon: {
+        low: ['yoga', 'stretching'],
+        medium: ['strength', 'cycling'],
+        high: ['running', 'cycling', 'strength']
+      },
+      evening: {
+        low: ['yoga', 'stretching', 'meditation'],
+        medium: ['yoga', 'strength'],
+        high: ['cycling', 'strength']
+      },
+      anytime: {
+        low: ['yoga', 'stretching', 'meditation'],
+        medium: ['cycling', 'strength', 'yoga'],
+        high: ['cycling', 'running', 'strength']
+      }
+    };
+
+    const timeKey = timeOfDay.toLowerCase();
+    const energyKey = energyLevel.toLowerCase();
+    
+    return recommendations[timeKey]?.[energyKey] || recommendations.anytime[energyKey] || ['cycling'];
   }
 }
 
