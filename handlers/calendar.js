@@ -496,105 +496,104 @@ async handleDailyRundown({ client, channel, thread_ts, userId }) {
       
       console.log(`Generated project rollup with ${projectRollup.totalProjects} projects`);
       
-      if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
-        // Show detailed project breakdown with tasks
-        rundown += `📊 *Project Workload* (${uniqueTasks.length} total tasks):\n\n`;
-        
-        // FIXED: Better sorting with defensive programming
-        const sortedProjects = Object.entries(projectRollup.byProject || {})
-          .sort(([,a], [,b]) => {
-            // Ensure arrays exist before accessing length
-            const aOverdue = (a && a.overdueTasks) ? a.overdueTasks.length : 0;
-            const bOverdue = (b && b.overdueTasks) ? b.overdueTasks.length : 0;
-            const aTotal = (a && a.allTasks) ? a.allTasks.length : 0;
-            const bTotal = (b && b.allTasks) ? b.allTasks.length : 0;
-            
-            if (aOverdue !== bOverdue) return bOverdue - aOverdue;
-            return bTotal - aTotal;
-          });
-        
-        console.log(`Sorted ${sortedProjects.length} projects for display`);
-        
-        for (const [projectName, projectData] of sortedProjects) {
-          if (!projectData) {
-            console.warn(`Skipping undefined project data for ${projectName}`);
-            continue;
-          }
-          
-          const overdueCount = (projectData.overdueTasks || []).length;
-          const todayCount = (projectData.todayTasks || []).length;
-          
-          // Create project name as hyperlink to Asana board
-          const projectLink = projectData.url ? 
-            `<${projectData.url}|${projectName}>` : 
-            projectName;
-          
-          // Format task counts
-          let taskCounts = '';
-          if (overdueCount > 0 && todayCount > 0) {
-            taskCounts = ` (${todayCount} due, ${overdueCount} overdue)`;
-          } else if (overdueCount > 0) {
-            taskCounts = ` (${overdueCount} overdue)`;
-          } else if (todayCount > 0) {
-            taskCounts = ` (${todayCount} due today)`;
-          }
-          
-          rundown += `*${projectLink}*${taskCounts}\n`;
-          
-          // Show top 3-4 most urgent tasks for this project
-          const overdueTasks = projectData.overdueTasks || [];
-          const todayTasks = projectData.todayTasks || [];
-          
-          const urgentTasks = [
-            ...overdueTasks.slice(0, 2), // Top 2 overdue
-            ...todayTasks.slice(0, 2)    // Top 2 due today
-          ].slice(0, 4); // Max 4 total
-          
-          for (const task of urgentTasks) {
-            if (!task || !task.name) continue; // Skip invalid tasks
-            
-            const isOverdue = overdueTasks.some(t => t && t.gid === task.gid);
-            const prefix = isOverdue ? '🚨' : '📋';
-            rundown += `   ${prefix} ${task.name}\n`;
-          }
-          
-          // Show remaining count if there are more tasks
-          const totalTasks = (projectData.allTasks || []).length;
-          const remainingCount = totalTasks - urgentTasks.length;
-          if (remainingCount > 0) {
-            rundown += `   _...and ${remainingCount} more tasks_\n`;
-          }
-          
-          rundown += '\n';
-        }
-        
-      } else {
-        // Show simplified view for manageable workload
-        if (overdueTasks.length > 0) {
-          rundown += `🚨 *Priority: Overdue Tasks* (${overdueTasks.length} total):\n`;
-          rundown += overdueTasks.slice(0, 4).map(t => {
-            const projectName = this.getTaskProjectName(t);
-            return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
-          }).join('\n');
-          if (overdueTasks.length > 4) {
-            rundown += `\n   _...and ${overdueTasks.length - 4} more overdue_`;
-          }
-          rundown += '\n\n';
-        }
+     // handlers/calendar.js - IMPROVED: Better project display formatting
+// Replace the project display section in handleDailyRundown (around line 110-160):
 
-        const uniqueTodayTasks = todaysTasks.filter(t => !overdueTasks.some(o => o.gid === t.gid));
-        if (uniqueTodayTasks.length > 0) {
-          rundown += `✅ *Due Today* (${uniqueTodayTasks.length} total):\n`;
-          rundown += uniqueTodayTasks.slice(0, 4).map(t => {
-            const projectName = this.getTaskProjectName(t);
-            return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
-          }).join('\n');
-          if (uniqueTodayTasks.length > 4) {
-            rundown += `\n   _...and ${uniqueTodayTasks.length - 4} more due today_`;
-          }
-          rundown += '\n\n';
-        }
+if (projectRollup.hasMultipleProjects && uniqueTasks.length > 8) {
+  // Show detailed project breakdown with tasks
+  rundown += `📊 *Project Workload* (${uniqueTasks.length} total tasks):\n\n`;
+  
+  // FIXED: Better sorting with defensive programming
+  const sortedProjects = Object.entries(projectRollup.byProject || {})
+    .sort(([,a], [,b]) => {
+      // Ensure arrays exist before accessing length
+      const aOverdue = (a && a.overdueTasks) ? a.overdueTasks.length : 0;
+      const bOverdue = (b && b.overdueTasks) ? b.overdueTasks.length : 0;
+      const aTotal = (a && a.allTasks) ? a.allTasks.length : 0;
+      const bTotal = (b && b.allTasks) ? b.allTasks.length : 0;
+      
+      if (aOverdue !== bOverdue) return bOverdue - aOverdue;
+      return bTotal - aTotal;
+    });
+  
+  console.log(`Sorted ${sortedProjects.length} projects for display`);
+  
+  for (const [projectName, projectData] of sortedProjects) {
+    if (!projectData) {
+      console.warn(`Skipping undefined project data for ${projectName}`);
+      continue;
+    }
+    
+    const allProjectTasks = projectData.allTasks || [];
+    const overdueProjectTasks = projectData.overdueTasks || [];
+    const todayProjectTasks = projectData.todayTasks || [];
+    
+    // IMPROVED: Show total task count in parentheses
+    const totalTaskCount = allProjectTasks.length;
+    
+    // Create project name as hyperlink to Asana board
+    const projectLink = projectData.url ? 
+      `<${projectData.url}|${projectName}>` : 
+      projectName;
+    
+    // IMPROVED: Format with task count
+    rundown += `*${projectLink}* (${totalTaskCount} tasks)\n`;
+    
+    // IMPROVED: Get top 3 most urgent tasks (prioritize overdue, then due today)
+    const mostUrgentTasks = [
+      ...overdueProjectTasks, // All overdue tasks first
+      ...todayProjectTasks.filter(t => !overdueProjectTasks.some(o => o.gid === t.gid)) // Today tasks that aren't already overdue
+    ]
+    .slice(0, 3); // Take top 3 most urgent
+    
+    // IMPROVED: Display tasks as bullet points
+    if (mostUrgentTasks.length > 0) {
+      for (const task of mostUrgentTasks) {
+        if (!task || !task.name) continue; // Skip invalid tasks
+        
+        const isOverdue = overdueProjectTasks.some(t => t && t.gid === task.gid);
+        const prefix = isOverdue ? '🚨' : '📋';
+        rundown += `   ${prefix} ${task.name}\n`;
       }
+    } else {
+      rundown += `   📋 No urgent tasks\n`;
+    }
+    
+    // Show remaining count if there are more tasks
+    const remainingCount = totalTaskCount - mostUrgentTasks.length;
+    if (remainingCount > 0) {
+      rundown += `   _...and ${remainingCount} more tasks_\n`;
+    }
+    
+    rundown += '\n'; // Add space between projects
+  }
+} else {
+  // Show simplified view for manageable workload (keep existing logic)
+  if (overdueTasks.length > 0) {
+    rundown += `🚨 *Priority: Overdue Tasks* (${overdueTasks.length} total):\n`;
+    rundown += overdueTasks.slice(0, 4).map(t => {
+      const projectName = this.getTaskProjectName(t);
+      return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
+    }).join('\n');
+    if (overdueTasks.length > 4) {
+      rundown += `\n   _...and ${overdueTasks.length - 4} more overdue_`;
+    }
+    rundown += '\n\n';
+  }
+
+  const uniqueTodayTasks = todaysTasks.filter(t => !overdueTasks.some(o => o.gid === t.gid));
+  if (uniqueTodayTasks.length > 0) {
+    rundown += `✅ *Due Today* (${uniqueTodayTasks.length} total):\n`;
+    rundown += uniqueTodayTasks.slice(0, 4).map(t => {
+      const projectName = this.getTaskProjectName(t);
+      return `   • ${t.name}${projectName ? ` _[${projectName}]_` : ''}`;
+    }).join('\n');
+    if (uniqueTodayTasks.length > 4) {
+      rundown += `\n   _...and ${uniqueTodayTasks.length - 4} more due today_`;
+    }
+    rundown += '\n\n';
+  }
+}
     }
 
     // FIXED: Now projectRollup is always defined
