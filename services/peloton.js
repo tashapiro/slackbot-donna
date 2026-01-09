@@ -7,32 +7,40 @@ class PelotonService {
     this.username = process.env.PELOTON_USERNAME;
     this.password = process.env.PELOTON_PASSWORD;
 
-    // Manual session ID auth (workaround for Peloton's deprecated auth endpoint)
-    // Users can obtain these from browser dev tools after logging in to members.onepeloton.com
+    // Bearer token auth (current Peloton method - OAuth2 JWT tokens)
+    // Users can obtain this from browser dev tools: Authorization header contains "Bearer <token>"
+    this.accessToken = process.env.PELOTON_ACCESS_TOKEN;
+
+    // Legacy: Manual session ID auth (may still work for some endpoints)
     this.manualSessionId = process.env.PELOTON_SESSION_ID;
     this.manualUserId = process.env.PELOTON_USER_ID;
 
     this.baseUrl = 'https://api.onepeloton.com';
     this.sessionId = null;
     this.userId = null;
+    this.authToken = null;  // For Bearer token auth
 
-    // Support both auth methods: manual session ID OR username/password
+    // Support multiple auth methods in priority order
+    this.hasAccessToken = !!this.accessToken;
     this.hasManualSession = !!(this.manualSessionId && this.manualUserId);
     this.hasCredentials = !!(this.username && this.password);
-    this.isConfigured = this.hasManualSession || this.hasCredentials;
+    this.isConfigured = this.hasAccessToken || this.hasManualSession || this.hasCredentials;
 
     if (!this.isConfigured) {
-      console.warn('Peloton not configured. Set either:');
-      console.warn('  - PELOTON_SESSION_ID and PELOTON_USER_ID (recommended)');
-      console.warn('  - PELOTON_USERNAME and PELOTON_PASSWORD (deprecated)');
+      console.warn('Peloton not configured. Set one of:');
+      console.warn('  - PELOTON_ACCESS_TOKEN (recommended - Bearer token from browser)');
+      console.warn('  - PELOTON_SESSION_ID + PELOTON_USER_ID (legacy cookie auth)');
+      console.warn('  - PELOTON_USERNAME + PELOTON_PASSWORD (deprecated)');
       console.warn('');
-      console.warn('To get your session ID:');
+      console.warn('To get your access token:');
       console.warn('  1. Log in to members.onepeloton.com in your browser');
       console.warn('  2. Open Developer Tools (F12) -> Network tab');
       console.warn('  3. Filter by "api/me" and refresh the page');
-      console.warn('  4. Right-click the "me" request -> Copy as cURL');
-      console.warn('  5. Find peloton_session_id in the cookie header');
-      console.warn('  6. The user ID is in the response JSON');
+      console.warn('  4. Click the "me" request, go to Headers tab');
+      console.warn('  5. Find "authorization: Bearer <token>" - copy the entire token after "Bearer "');
+      console.warn('  6. Set: PELOTON_ACCESS_TOKEN=<your_token>');
+    } else if (this.hasAccessToken) {
+      console.log('✅ Peloton configured with Bearer token');
     } else if (this.hasManualSession) {
       console.log('✅ Peloton configured with manual session ID');
     } else {
@@ -42,25 +50,80 @@ class PelotonService {
 
   // Generate auth headers for authenticated requests
   getAuthHeaders() {
-    if (!this.sessionId) {
-      throw new Error('Not authenticated - call authenticate() first');
+    // Bearer token auth (preferred)
+    if (this.authToken) {
+      return {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Authorization': `Bearer ${this.authToken}`,
+        'peloton-platform': 'web'
+      };
     }
-    
-    return {
-      'Content-Type': 'application/json',
-      'Accept': 'application/json',
-      'Cookie': `peloton_session_id=${this.sessionId}`,
-      'peloton-platform': 'web'  // Required for many endpoints
-    };
+
+    // Legacy session cookie auth
+    if (this.sessionId) {
+      return {
+        'Content-Type': 'application/json',
+        'Accept': 'application/json',
+        'Cookie': `peloton_session_id=${this.sessionId}`,
+        'peloton-platform': 'web'
+      };
+    }
+
+    throw new Error('Not authenticated - call authenticate() first');
   }
 
-  // Authenticate and get session ID
+  // Extract user ID from JWT token payload
+  extractUserIdFromToken(token) {
+    try {
+      // JWT format: header.payload.signature - we need the payload (middle part)
+      const parts = token.split('.');
+      if (parts.length !== 3) return null;
+
+      // Decode base64url payload
+      const payload = parts[1].replace(/-/g, '+').replace(/_/g, '/');
+      const decoded = JSON.parse(Buffer.from(payload, 'base64').toString('utf8'));
+
+      // Peloton stores user_id in custom claim
+      return decoded['http://onepeloton.com/user_id'] || decoded.sub?.replace('auth0|', '') || null;
+    } catch (error) {
+      console.error('Failed to extract user ID from token:', error.message);
+      return null;
+    }
+  }
+
+  // Authenticate and get session/token
   async authenticate() {
     if (!this.isConfigured) {
       throw new Error('Peloton credentials not configured. See console for setup instructions.');
     }
 
-    // Priority 1: Use manual session ID if provided (recommended method)
+    // Priority 1: Use Bearer token if provided (current Peloton auth method)
+    if (this.hasAccessToken) {
+      this.authToken = this.accessToken;
+      // Extract user ID from JWT token
+      this.userId = this.extractUserIdFromToken(this.accessToken);
+      if (!this.userId) {
+        // If we can't extract from token, try to get from /api/me
+        console.log('Fetching user ID from /api/me...');
+        try {
+          const response = await fetch(`${this.baseUrl}/api/me`, {
+            method: 'GET',
+            headers: this.getAuthHeaders()
+          });
+          if (response.ok) {
+            const userData = await response.json();
+            this.userId = userData.id;
+          }
+        } catch (e) {
+          console.warn('Could not fetch user ID from /api/me');
+        }
+      }
+      console.log(`Using Bearer token authentication (user: ${this.userId || 'unknown'})`);
+      return true;
+    }
+
+    // Priority 2: Use manual session ID if provided (legacy method)
     if (this.hasManualSession) {
       this.sessionId = this.manualSessionId;
       this.userId = this.manualUserId;
@@ -68,7 +131,7 @@ class PelotonService {
       return true;
     }
 
-    // Priority 2: Check if we have a cached session that's still valid
+    // Priority 3: Check if we have a cached session that's still valid
     const cacheKey = 'peloton_session';
     const cached = dataStore.getCachedData(cacheKey, 3600000); // 1 hour cache
     if (cached && cached.sessionId && cached.userId) {
@@ -78,7 +141,7 @@ class PelotonService {
       return true;
     }
 
-    // Priority 3: Try username/password auth (deprecated, may fail with 403)
+    // Priority 4: Try username/password auth (deprecated, may fail with 403)
     if (this.hasCredentials) {
       try {
         console.log('Attempting username/password authentication (deprecated method)...');
@@ -102,18 +165,15 @@ class PelotonService {
             console.error('❌ Peloton auth/login endpoint returned 403 Forbidden.');
             console.error('   Peloton has deprecated username/password authentication.');
             console.error('');
-            console.error('   Please switch to manual session ID authentication:');
+            console.error('   Please switch to Bearer token authentication:');
             console.error('   1. Log in to members.onepeloton.com in your browser');
             console.error('   2. Open Developer Tools (F12) -> Network tab');
             console.error('   3. Filter by "api/me" and refresh the page');
-            console.error('   4. Right-click the "me" request -> Copy as cURL (bash)');
-            console.error('   5. Extract peloton_session_id from the cookie header');
-            console.error('   6. Get your user_id from the response JSON');
-            console.error('   7. Set environment variables:');
-            console.error('      PELOTON_SESSION_ID=<your_session_id>');
-            console.error('      PELOTON_USER_ID=<your_user_id>');
+            console.error('   4. Click the request, find "authorization: Bearer <token>"');
+            console.error('   5. Copy the token (everything after "Bearer ")');
+            console.error('   6. Set: PELOTON_ACCESS_TOKEN=<your_token>');
             console.error('');
-            throw new Error('Peloton username/password auth is deprecated. Please use PELOTON_SESSION_ID instead.');
+            throw new Error('Peloton username/password auth is deprecated. Please use PELOTON_ACCESS_TOKEN instead.');
           }
           throw new Error(`Peloton login failed: ${response.status} ${errorText}`);
         }
@@ -144,9 +204,9 @@ class PelotonService {
     throw new Error('No valid Peloton authentication method available');
   }
 
-  // Validate that the current session is still working
+  // Validate that the current session/token is still working
   async validateSession() {
-    if (!this.sessionId || !this.userId) {
+    if (!this.authToken && !this.sessionId) {
       return false;
     }
 
@@ -160,18 +220,19 @@ class PelotonService {
       if (!response.ok) {
         if (response.status === 401 || response.status === 403) {
           console.error('');
-          console.error('❌ Peloton session is invalid or expired.');
-          console.error('   Your session ID may have expired (sessions typically last a few weeks).');
+          console.error('❌ Peloton authentication is invalid or expired.');
+          console.error('   Your access token may have expired (tokens typically last ~48 hours).');
           console.error('');
-          console.error('   To get a new session ID:');
+          console.error('   To get a new access token:');
           console.error('   1. Log in to members.onepeloton.com in your browser');
           console.error('   2. Open Developer Tools (F12) -> Network tab');
           console.error('   3. Filter by "api/me" and refresh the page');
-          console.error('   4. Right-click the "me" request -> Copy as cURL (bash)');
-          console.error('   5. Extract peloton_session_id from the cookie header');
-          console.error('   6. Update your PELOTON_SESSION_ID environment variable');
+          console.error('   4. Click the request, find "authorization: Bearer <token>"');
+          console.error('   5. Copy the token (everything after "Bearer ")');
+          console.error('   6. Update your PELOTON_ACCESS_TOKEN environment variable');
           console.error('');
-          // Clear the invalid session
+          // Clear the invalid auth
+          this.authToken = null;
           this.sessionId = null;
           this.userId = null;
           return false;
