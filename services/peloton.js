@@ -3,15 +3,40 @@ const dataStore = require('../utils/dataStore');
 
 class PelotonService {
   constructor() {
+    // Traditional username/password auth (deprecated by Peloton as of early 2025)
     this.username = process.env.PELOTON_USERNAME;
     this.password = process.env.PELOTON_PASSWORD;
+
+    // Manual session ID auth (workaround for Peloton's deprecated auth endpoint)
+    // Users can obtain these from browser dev tools after logging in to members.onepeloton.com
+    this.manualSessionId = process.env.PELOTON_SESSION_ID;
+    this.manualUserId = process.env.PELOTON_USER_ID;
+
     this.baseUrl = 'https://api.onepeloton.com';
     this.sessionId = null;
     this.userId = null;
-    this.isConfigured = !!(this.username && this.password);
-    
+
+    // Support both auth methods: manual session ID OR username/password
+    this.hasManualSession = !!(this.manualSessionId && this.manualUserId);
+    this.hasCredentials = !!(this.username && this.password);
+    this.isConfigured = this.hasManualSession || this.hasCredentials;
+
     if (!this.isConfigured) {
-      console.warn('PELOTON_USERNAME and PELOTON_PASSWORD not configured');
+      console.warn('Peloton not configured. Set either:');
+      console.warn('  - PELOTON_SESSION_ID and PELOTON_USER_ID (recommended)');
+      console.warn('  - PELOTON_USERNAME and PELOTON_PASSWORD (deprecated)');
+      console.warn('');
+      console.warn('To get your session ID:');
+      console.warn('  1. Log in to members.onepeloton.com in your browser');
+      console.warn('  2. Open Developer Tools (F12) -> Network tab');
+      console.warn('  3. Filter by "api/me" and refresh the page');
+      console.warn('  4. Right-click the "me" request -> Copy as cURL');
+      console.warn('  5. Find peloton_session_id in the cookie header');
+      console.warn('  6. The user ID is in the response JSON');
+    } else if (this.hasManualSession) {
+      console.log('✅ Peloton configured with manual session ID');
+    } else {
+      console.log('⚠️  Peloton configured with username/password (may fail due to API changes)');
     }
   }
 
@@ -32,10 +57,18 @@ class PelotonService {
   // Authenticate and get session ID
   async authenticate() {
     if (!this.isConfigured) {
-      throw new Error('Peloton credentials not configured');
+      throw new Error('Peloton credentials not configured. See console for setup instructions.');
     }
 
-    // Check if we have a cached session that's still valid
+    // Priority 1: Use manual session ID if provided (recommended method)
+    if (this.hasManualSession) {
+      this.sessionId = this.manualSessionId;
+      this.userId = this.manualUserId;
+      console.log('Using manual Peloton session ID');
+      return true;
+    }
+
+    // Priority 2: Check if we have a cached session that's still valid
     const cacheKey = 'peloton_session';
     const cached = dataStore.getCachedData(cacheKey, 3600000); // 1 hour cache
     if (cached && cached.sessionId && cached.userId) {
@@ -45,44 +78,113 @@ class PelotonService {
       return true;
     }
 
+    // Priority 3: Try username/password auth (deprecated, may fail with 403)
+    if (this.hasCredentials) {
+      try {
+        console.log('Attempting username/password authentication (deprecated method)...');
+        const response = await fetch(`${this.baseUrl}/auth/login`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            username_or_email: this.username,
+            password: this.password
+          })
+        });
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          // Provide helpful error message for 403 errors
+          if (response.status === 403) {
+            console.error('');
+            console.error('❌ Peloton auth/login endpoint returned 403 Forbidden.');
+            console.error('   Peloton has deprecated username/password authentication.');
+            console.error('');
+            console.error('   Please switch to manual session ID authentication:');
+            console.error('   1. Log in to members.onepeloton.com in your browser');
+            console.error('   2. Open Developer Tools (F12) -> Network tab');
+            console.error('   3. Filter by "api/me" and refresh the page');
+            console.error('   4. Right-click the "me" request -> Copy as cURL (bash)');
+            console.error('   5. Extract peloton_session_id from the cookie header');
+            console.error('   6. Get your user_id from the response JSON');
+            console.error('   7. Set environment variables:');
+            console.error('      PELOTON_SESSION_ID=<your_session_id>');
+            console.error('      PELOTON_USER_ID=<your_user_id>');
+            console.error('');
+            throw new Error('Peloton username/password auth is deprecated. Please use PELOTON_SESSION_ID instead.');
+          }
+          throw new Error(`Peloton login failed: ${response.status} ${errorText}`);
+        }
+
+        const authData = await response.json();
+
+        if (!authData.session_id || !authData.user_id) {
+          throw new Error('Peloton login response missing session_id or user_id');
+        }
+
+        this.sessionId = authData.session_id;
+        this.userId = authData.user_id;
+
+        // Cache the session
+        dataStore.setCachedData(cacheKey, {
+          sessionId: this.sessionId,
+          userId: this.userId
+        });
+
+        console.log(`✅ Peloton authentication successful for user ${this.userId}`);
+        return true;
+      } catch (error) {
+        console.error('Peloton authentication error:', error.message);
+        throw error;
+      }
+    }
+
+    throw new Error('No valid Peloton authentication method available');
+  }
+
+  // Validate that the current session is still working
+  async validateSession() {
+    if (!this.sessionId || !this.userId) {
+      return false;
+    }
+
     try {
-      const response = await fetch(`${this.baseUrl}/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-        },
-        body: JSON.stringify({
-          username_or_email: this.username,
-          password: this.password
-        })
+      // Make a lightweight API call to verify the session is valid
+      const response = await fetch(`${this.baseUrl}/api/me`, {
+        method: 'GET',
+        headers: this.getAuthHeaders()
       });
 
       if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`Peloton login failed: ${response.status} ${errorText}`);
+        if (response.status === 401 || response.status === 403) {
+          console.error('');
+          console.error('❌ Peloton session is invalid or expired.');
+          console.error('   Your session ID may have expired (sessions typically last a few weeks).');
+          console.error('');
+          console.error('   To get a new session ID:');
+          console.error('   1. Log in to members.onepeloton.com in your browser');
+          console.error('   2. Open Developer Tools (F12) -> Network tab');
+          console.error('   3. Filter by "api/me" and refresh the page');
+          console.error('   4. Right-click the "me" request -> Copy as cURL (bash)');
+          console.error('   5. Extract peloton_session_id from the cookie header');
+          console.error('   6. Update your PELOTON_SESSION_ID environment variable');
+          console.error('');
+          // Clear the invalid session
+          this.sessionId = null;
+          this.userId = null;
+          return false;
+        }
+        return false;
       }
 
-      const authData = await response.json();
-      
-      if (!authData.session_id || !authData.user_id) {
-        throw new Error('Peloton login response missing session_id or user_id');
-      }
-
-      this.sessionId = authData.session_id;
-      this.userId = authData.user_id;
-
-      // Cache the session
-      dataStore.setCachedData(cacheKey, {
-        sessionId: this.sessionId,
-        userId: this.userId
-      });
-
-      console.log(`✅ Peloton authentication successful for user ${this.userId}`);
+      const userData = await response.json();
+      console.log(`✅ Peloton session valid for user: ${userData.username || userData.id}`);
       return true;
     } catch (error) {
-      console.error('Peloton authentication error:', error);
-      throw error;
+      console.error('Session validation error:', error.message);
+      return false;
     }
   }
 
