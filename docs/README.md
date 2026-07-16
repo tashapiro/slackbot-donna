@@ -134,6 +134,53 @@ Relevant code:
 **Limitation:** thread reading needs a thread. In a plain DM with no threads, Donna has
 no `thread_ts` to read from, so extraction there will report it has nothing to read.
 
+## Memory & client context
+
+This is **Phase 2** (see [`roadmap.md`](./roadmap.md)). It gives the agentic brain
+(`BRAIN=agentic`) two things it lacked: a persistent memory that survives Render restarts, and an
+awareness of **which client** each message is about — with the clients kept strictly separate.
+
+**Client registry (from your Google Sheet).** The source of truth for clients is a Google Sheet
+you maintain. Donna reads it with the **same Google service account** as Calendar — share the sheet
+with the service-account email (read access) and set `CLIENT_REGISTRY_SHEET_ID`. Columns are
+**auto-detected from the header row** (client name, aliases, Asana project, email domain, status),
+so your layout doesn't have to match any fixed template; override any header with
+`CLIENT_REGISTRY_COL_*` if detection misses it. The registry is cached ~5 minutes.
+
+**Per-message client resolution.** Because a channel isn't one-client-per-channel (a shared
+`call-notes` channel holds Fireflies notes across clients), Donna resolves the client **per
+message**: she matches the message and its thread transcript against the registry (names / aliases /
+email domains) and lands on one of —
+
+- **confident** → she proceeds and prefixes her reply with `📁 <Client>` so any mistake is visible;
+- **ambiguous** (more than one match) → she asks *which client?* before doing anything client-specific;
+- **none** → treated as non-client work.
+
+An explicit **"for <Client>, …"** always overrides.
+
+**Scoped memory (Postgres).** Memory lives in Postgres (Render Postgres) behind
+`services/memoryStore.js` — **the only module that touches the database**. Facts are stored in one
+of three scopes:
+
+- **personal** — about you (preferences, meals, workouts);
+- **business** — true across all clients (rate card, email voice, bio);
+- **client** — about one client only (deadlines, decisions, contacts).
+
+Isolation is enforced **in storage, not the prompt**: every read applies
+`WHERE scope = ? AND (scope <> 'client' OR client_key = ?)`, and the brain is only ever handed
+`personal + business + the active client`. Donna literally cannot store to, or read from, another
+client's namespace — the client key comes from the resolver, never from the model. Aggregating
+across clients is allowed only when it's explicit and read-only ("my workload across all clients");
+anything she drafts or sends outward stays single-client.
+
+Donna uses two tools for this — `recall` (before answering) and `remember` (to save a durable
+fact). Without `DATABASE_URL` or `CLIENT_REGISTRY_SHEET_ID` the features simply report "not
+configured" and the rest of the bot is unchanged.
+
+Relevant code: `services/googleSheets.js`, `services/clientRegistry.js`, `utils/clientResolver.js`,
+`services/memoryStore.js`, plus the `remember`/`recall` tools in `utils/donnaTools.js` and the
+resolution + memory wiring in `utils/donnaBrain.js`.
+
 ## Integrations
 
 | Service | Wraps | Env vars |
@@ -141,6 +188,8 @@ no `thread_ts` to read from, so extraction there will report it has nothing to r
 | Slack | Bolt app (socket or HTTP) | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_APP_TOKEN` (socket) |
 | OpenAI | Intent routing + task extraction | `OPENAI_API_KEY`, `ROUTER_MODEL`, `EXTRACT_MODEL` |
 | Anthropic (Claude) | Agentic brain (`BRAIN=agentic`) | `ANTHROPIC_API_KEY`, `DONNA_MODEL` |
+| Postgres | Persistent scoped memory (`memoryStore`) | `DATABASE_URL`, `DATABASE_SSL` |
+| Google Sheets | Client registry (read-only) | `CLIENT_REGISTRY_SHEET_ID`, `CLIENT_REGISTRY_COL_*` (+ Google service account) |
 | SavvyCal | Scheduling links | `SAVVYCAL_TOKEN` |
 | Toggl | Time tracking | (see `services/toggl.js`) |
 | Asana | Tasks & projects | `ASANA_API_TOKEN`, `ASANA_WORKSPACE_ID` |
@@ -183,6 +232,8 @@ Use it as the checklist for what to set in the Render dashboard. The most import
 | `EXTRACT_MODEL` | Model for action-item extraction | `gpt-4o` |
 | `ANTHROPIC_API_KEY` | Anthropic auth (agentic brain) | — |
 | `DONNA_MODEL` | Model for the agentic brain | `claude-sonnet-5` |
+| `DATABASE_URL` | Postgres connection (enables persistent memory) | — |
+| `CLIENT_REGISTRY_SHEET_ID` | Google Sheet ID for the client registry | — |
 | `ASANA_API_TOKEN` / `ASANA_WORKSPACE_ID` | Asana auth / workspace | — |
 | `SAVVYCAL_TOKEN` | SavvyCal auth | — |
 
@@ -236,11 +287,16 @@ handlers/
   workout.js               Peloton intents
 services/
   savvycal.js  toggl.js  asana.js  googleCalendar.js  peloton.js
+  googleSheets.js          Read-only Google Sheets access (client registry source)
+  clientRegistry.js        Clients from the Sheet: config-driven column mapping + cache
+  memoryStore.js           Persistent scope-isolated memory (Postgres) — only DB module
 utils/
   intentClassifier.js      OpenAI router brain: LLM intent + slot extraction
   donnaBrain.js            Agentic (Claude) brain: Tool Runner loop  [BRAIN=agentic]
   donnaPrompt.js           Donna's personality + operating rules (system prompt)
-  donnaTools.js            Agentic tools wrapping the services (reads + propose_tasks/propose_meeting)
+  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + remember/recall)
+  clientResolver.js        Resolve the active client per message (confident/ambiguous/none)
+  googleAuth.js            Shared Google service-account credential parsing
   taskExtractor.js         LLM action-item extraction (thread → tasks, router path)
   threadReader.js          Read + format a Slack thread transcript
   dataStore.js             In-memory per-thread state & caches
@@ -248,6 +304,7 @@ utils/
   timezoneHelper.js        Per-user timezone handling
 scripts/
   check-syntax.js          Minimal smoke test (npm test) — syntax-checks all .js
+  check-phase2.js          Offline checks for the resolver + memory scope filters
 docs/
   README.md                How Donna works today (this file)
   roadmap.md               Evolution plan + Phase to-dos

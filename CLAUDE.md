@@ -79,7 +79,13 @@ Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
   known stiffness sources slated for replacement by the Phase 1 Claude brain — don't build
   new features on them.
 - No automated tests; verify changes by syntax-checking and, where possible, exercising the
-  real flow.
+  real flow. Phase 2 adds `npm run check:phase2` (offline: resolver + memory scope filters);
+  `npm test` runs it after the syntax check.
+- **Client isolation lives in storage, not prompts.** `services/memoryStore.js` is the *only*
+  module that touches the DB, and its scope filter
+  (`WHERE scope = ? AND (scope <> 'client' OR client_key = ?)`) is not optional — never add a
+  read path that can return another client's rows. The active `client_key` comes from
+  `utils/clientResolver.js`, never from the model.
 - `.gitignore` covers `node_modules` and `.env`.
 
 ## Git workflow
@@ -92,5 +98,5 @@ Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
   to-dos, and this file when conventions change.
 - Commit with clear messages; push with `git push -u origin <branch>`.
 - Don't open a PR or push to `main` without explicit permission.
-- Current working branch: `claude/donna-context-asana-7tkl2c` (thread-context feature +
-  Phase 0 cleanup + Phase 1 agentic spike). Update this line when a new phase branch starts.
+- Current working branch: `claude/phase-2-implementation-hw1tvz` (Phase 2 — scoped memory +
+  client registry/resolver). Update this line when a new phase branch starts.

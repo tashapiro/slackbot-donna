@@ -16,6 +16,8 @@ const togglService = require('./services/toggl');
 const asanaService = require('./services/asana');
 const googleCalendarService = require('./services/googleCalendar');
 const pelotonService = require('./services/peloton');
+const clientRegistry = require('./services/clientRegistry');
+const memoryStore = require('./services/memoryStore');
 
 
 
@@ -993,6 +995,24 @@ setInterval(() => {
     }
   } else {
     console.log('🧠 Brain: OpenAI intent router (set BRAIN=agentic to use the Claude Tool Runner)');
+  }
+
+  // Phase 2 — memory & client context readiness
+  if (clientRegistry.isEnabled()) {
+    try {
+      const clients = await clientRegistry.getActiveClients();
+      console.log(`📁 Client registry: loaded ${clients.length} active client(s) from the Google Sheet`);
+    } catch (err) {
+      console.warn('⚠️ Client registry configured but failed to load:', err.message);
+    }
+  } else {
+    console.log('📁 Client registry: not configured (set CLIENT_REGISTRY_SHEET_ID + share the sheet with the service account)');
+  }
+  if (memoryStore.isEnabled()) {
+    const ok = await memoryStore.init();
+    console.log(ok ? '🧠 Memory: Postgres connected (persistent, scope-isolated)' : '⚠️ Memory: DATABASE_URL set but init failed — check the connection');
+  } else {
+    console.log('🧠 Memory: not configured (set DATABASE_URL to persist across restarts)');
   }
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   console.log('🌍 Now with timezone-aware calendar support - respecting every user\'s local time');

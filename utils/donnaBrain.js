@@ -10,6 +10,9 @@
 const { buildSystem } = require('./donnaPrompt');
 const { buildTools } = require('./donnaTools');
 const { fetchThreadTranscript, formatTranscript } = require('./threadReader');
+const { resolveClient } = require('./clientResolver');
+const clientRegistry = require('../services/clientRegistry');
+const memoryStore = require('../services/memoryStore');
 const TimezoneHelper = require('./timezoneHelper');
 const dataStore = require('./dataStore');
 
@@ -85,13 +88,52 @@ async function handleMessage({ text, client, channel, thread_ts, userId, botUser
   const timezone = await TimezoneHelper.getUserTimezone(client, userId);
   const system = buildSystem({ now: new Date(), timezone });
 
+  // Resolve the active client for this message (content-matched against the registry).
+  // Failures degrade to "no client" — never block the reply.
+  let resolution = { status: 'none', client: null, candidates: [] };
+  try {
+    const clients = await clientRegistry.getActiveClients();
+    resolution = resolveClient({ text, transcript, clients });
+  } catch (err) {
+    (logger && logger.warn ? logger.warn : console.warn)('Client resolution failed:', err.message);
+  }
+  const activeClient = resolution.status === 'confident' ? resolution.client : null;
+
+  // Preload the memory Donna is allowed to see now (personal + business + active client only).
+  let memoryLines = [];
+  if (memoryStore.isEnabled()) {
+    try {
+      await memoryStore.init();
+      const rows = await memoryStore.recallVisible({ client_key: activeClient ? activeClient.key : null });
+      memoryLines = rows.map(r => {
+        const scopeLabel = r.scope === 'client' && activeClient ? `client:${activeClient.name}` : r.scope;
+        return `• [${scopeLabel}${r.kind ? `/${r.kind}` : ''}] ${r.content}`;
+      });
+    } catch (err) {
+      (logger && logger.warn ? logger.warn : console.warn)('Memory preload failed:', err.message);
+    }
+  }
+
   let userContent = '';
   if (transcript.length) {
     userContent += `Conversation in this Slack thread so far:\n${formatTranscript(transcript)}\n\n`;
   }
+  if (resolution.status === 'confident' && activeClient) {
+    userContent += `Active client for this message: ${activeClient.name} (📁). If that's wrong, the user will say so.\n\n`;
+  } else if (resolution.status === 'ambiguous') {
+    const names = resolution.candidates.map(c => c.name).join(' or ');
+    userContent += `The client is ambiguous — it could be ${names}. Ask which one before doing anything client-specific.\n\n`;
+  }
+  if (memoryLines.length) {
+    userContent += `What you already remember that's relevant now:\n${memoryLines.join('\n')}\n\n`;
+  }
   userContent += `The most recent message, which you are replying to, is:\n"${text}"`;
 
-  const tools = buildTools({ client, channel, thread_ts, userId }).map(betaTool);
+  const tools = buildTools({
+    client, channel, thread_ts, userId,
+    activeClient,
+    clientStatus: resolution.status
+  }).map(betaTool);
 
   try {
     const finalMessage = await anthropic.beta.messages.toolRunner({
@@ -105,7 +147,9 @@ async function handleMessage({ text, client, channel, thread_ts, userId, botUser
 
     const reply = extractText(finalMessage);
     if (reply) {
-      await client.chat.postMessage({ channel, thread_ts, text: reply });
+      // Surface the resolved client so any mis-resolution is visible to the user.
+      const prefix = activeClient ? `📁 *${activeClient.name}*\n` : '';
+      await client.chat.postMessage({ channel, thread_ts, text: prefix + reply });
     }
   } catch (err) {
     (logger && logger.error ? logger.error : console.error)('Agentic brain error:', err);

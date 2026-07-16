@@ -6,6 +6,7 @@
 
 const asanaService = require('../services/asana');
 const googleCalendarService = require('../services/googleCalendar');
+const memoryStore = require('../services/memoryStore');
 const TimezoneHelper = require('./timezoneHelper');
 const projectHandler = require('../handlers/projects');
 const calendarHandler = require('../handlers/calendar');
@@ -14,13 +15,15 @@ const dataStore = require('./dataStore');
 /**
  * Build the tool set bound to one Slack request context.
  * @param {Object} ctx
- * @param {object} ctx.client    Slack web client
+ * @param {object} ctx.client            Slack web client
  * @param {string} ctx.channel
  * @param {string} [ctx.thread_ts]
  * @param {string} ctx.userId
+ * @param {Object|null} [ctx.activeClient]  Resolved client { key, name, ... } or null.
+ * @param {string} [ctx.clientStatus]       'confident' | 'ambiguous' | 'none'.
  * @returns {Array<{name,description,inputSchema,run}>}
  */
-function buildTools({ client, channel, thread_ts, userId }) {
+function buildTools({ client, channel, thread_ts, userId, activeClient = null, clientStatus = 'none' }) {
   return [
     {
       name: 'list_tasks',
@@ -279,6 +282,93 @@ function buildTools({ client, channel, thread_ts, userId }) {
         });
 
         return 'A calendar-event preview is now shown to the user with Create / Cancel buttons. Awaiting their confirmation — do not take further action.';
+      }
+    },
+
+    {
+      name: 'remember',
+      description:
+        "Save a durable fact to Donna's memory so it survives restarts. Use for things worth " +
+        'keeping: user preferences (personal), how the business works (business — rate card, ' +
+        'email voice, bio), or a specific client\'s details (client — deadlines, decisions, ' +
+        'contacts, contract terms). Do NOT use it for one-off chatter. For client facts, the ' +
+        'active client is set automatically from the conversation — you cannot store to another ' +
+        'client. If the client is unclear, ask the user which client first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          scope: {
+            type: 'string',
+            enum: ['personal', 'business', 'client'],
+            description:
+              "personal = about the user; business = true across all clients (IndieVisual); " +
+              'client = about the current client only.'
+          },
+          content: { type: 'string', description: 'The fact to remember, in a clear sentence.' },
+          kind: {
+            type: 'string',
+            description: 'Optional short label, e.g. "preference", "deadline", "contact", "decision".'
+          }
+        },
+        required: ['scope', 'content'],
+        additionalProperties: false
+      },
+      run: async ({ scope, content, kind }) => {
+        if (!memoryStore.isEnabled()) {
+          return 'Memory isn\'t configured yet (no database), so I can\'t save that permanently. ' +
+            'Tell the user their memory store isn\'t set up.';
+        }
+        if (scope === 'client') {
+          if (clientStatus !== 'confident' || !activeClient) {
+            return 'This is client-specific, but the active client isn\'t confirmed. Ask the user ' +
+              'which client this is about before saving — I won\'t store client memory unconfirmed.';
+          }
+        }
+        try {
+          await memoryStore.remember({
+            scope,
+            client_key: scope === 'client' ? activeClient.key : null,
+            kind: kind || null,
+            content
+          });
+          const where = scope === 'client' ? `for ${activeClient.name}` : `(${scope})`;
+          return `Saved to memory ${where}. Tell the user you'll remember it.`;
+        } catch (err) {
+          return `Couldn't save that to memory: ${err.message}`;
+        }
+      }
+    },
+
+    {
+      name: 'recall',
+      description:
+        "Look up what Donna already remembers that's relevant right now. Returns personal + " +
+        "business facts plus (only) the active client's facts — never another client's. Use it " +
+        'before answering questions about the user, the business, or the current client.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          kind: {
+            type: 'string',
+            description: 'Optional label to filter by (e.g. "preference", "deadline", "contact").'
+          }
+        },
+        additionalProperties: false
+      },
+      run: async ({ kind }) => {
+        if (!memoryStore.isEnabled()) return 'Memory isn\'t configured (no database), so I have nothing stored.';
+        try {
+          const rows = await memoryStore.recallVisible({
+            client_key: activeClient ? activeClient.key : null,
+            kind: kind || null
+          });
+          if (!rows.length) return 'Nothing relevant in memory yet.';
+          const label = s => (s === 'client' && activeClient ? `client:${activeClient.name}` : s);
+          const lines = rows.map(r => `- [${label(r.scope)}${r.kind ? `/${r.kind}` : ''}] ${r.content}`);
+          return `From memory (${rows.length}):\n${lines.join('\n')}`;
+        } catch (err) {
+          return `Couldn't read memory: ${err.message}`;
+        }
       }
     }
   ];
