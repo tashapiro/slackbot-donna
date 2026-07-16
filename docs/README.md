@@ -13,6 +13,10 @@ conversation and turn its action items into Asana tasks.
 - [Setup & configuration](#setup--configuration)
 - [Project layout](#project-layout)
 
+> **Where Donna is headed:** see [`roadmap.md`](./roadmap.md) for the evolution plan —
+> moving her brain to Claude with an agentic tool-use loop, adding memory and proactivity,
+> and expanding across business functions. Phases 0 and 1 have to-do checklists there.
+
 ---
 
 ## Architecture
