@@ -197,23 +197,28 @@ Donna has two interchangeable brains for open-ended messages, selected by `BRAIN
 ## Project layout
 
 ```
-app.js                     Slack wiring, message routing, intent dispatch, buttons
-brain.js                   Legacy router (superseded by utils/intentClassifier.js)
+app.js                     Slack wiring, message routing, brain selection, buttons
 handlers/
   scheduling.js            SavvyCal link intents
   timeTracking.js          Toggl intents
-  projects.js              Asana intents + thread task extraction
+  projects.js              Asana intents + thread task extraction (+ shared preview/confirm)
   calendar.js              Google Calendar intents + daily rundown
   workout.js               Peloton intents
 services/
   savvycal.js  toggl.js  asana.js  googleCalendar.js  peloton.js
 utils/
-  intentClassifier.js      LLM intent + slot extraction
-  taskExtractor.js         LLM action-item extraction (thread → tasks)
+  intentClassifier.js      OpenAI router brain: LLM intent + slot extraction
+  donnaBrain.js            Agentic (Claude) brain: Tool Runner loop  [BRAIN=agentic]
+  donnaPrompt.js           Donna's personality + operating rules (system prompt)
+  donnaTools.js            Agentic tools wrapping the services (read + propose_tasks)
+  taskExtractor.js         LLM action-item extraction (thread → tasks, router path)
   threadReader.js          Read + format a Slack thread transcript
   dataStore.js             In-memory per-thread state & caches
   errorHandler.js          Standardized error messages
   timezoneHelper.js        Per-user timezone handling
+scripts/
+  check-syntax.js          Minimal smoke test (npm test) — syntax-checks all .js
 docs/
-  README.md                This file
+  README.md                How Donna works today (this file)
+  roadmap.md               Evolution plan + Phase to-dos
 ```
