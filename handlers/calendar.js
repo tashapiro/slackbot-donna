@@ -880,77 +880,6 @@ generatePeriodInsights({ events, tasks, overdue, timezone, projectCount, dateInf
   return insights.length > 0 ? insights.join(' ') : null;
 }
 
-// FIXED: Enhanced project rollup with better error handling
-async generateProjectRollup(allTasks, overdueTasks, todaysTasks) {
-  console.log(`Generating project rollup for ${allTasks.length} tasks`);
-  
-  const rollup = {
-    byProject: {},
-    hasMultipleProjects: false,
-    totalProjects: 0
-  };
-  
-  try {
-    const projectCache = new Map();
-    
-    // Organize tasks by project
-    for (const task of allTasks) {
-      if (!task) continue; // Skip invalid tasks
-      
-      const projectInfo = this.getTaskProjectInfo(task);
-      const projectName = projectInfo.name;
-      
-      if (!rollup.byProject[projectName]) {
-        rollup.byProject[projectName] = {
-          allTasks: [],
-          overdueTasks: [],
-          todayTasks: [],
-          projectId: projectInfo.id,
-          url: null
-        };
-        
-        // Get Asana project URL
-        if (projectInfo.id && !projectCache.has(projectInfo.id)) {
-          const projectUrl = `https://app.asana.com/0/${projectInfo.id}`;
-          projectCache.set(projectInfo.id, projectUrl);
-        }
-        rollup.byProject[projectName].url = projectCache.get(projectInfo.id);
-      }
-      
-      // Add to appropriate task lists with null checks
-      rollup.byProject[projectName].allTasks.push(task);
-      
-      if (overdueTasks && overdueTasks.some(o => o && o.gid === task.gid)) {
-        rollup.byProject[projectName].overdueTasks.push(task);
-      }
-      
-      if (todaysTasks && todaysTasks.some(t => t && t.gid === task.gid)) {
-        rollup.byProject[projectName].todayTasks.push(task);
-      }
-    }
-    
-    rollup.totalProjects = Object.keys(rollup.byProject).length;
-    rollup.hasMultipleProjects = rollup.totalProjects > 1;
-    
-    console.log(`Project rollup complete: ${rollup.totalProjects} projects, multiple: ${rollup.hasMultipleProjects}`);
-    
-    return rollup;
-    
-  } catch (error) {
-    console.error('Error in generateProjectRollup:', error);
-    return {
-      byProject: {},
-      hasMultipleProjects: false,
-      totalProjects: 0
-    };
-  }
-}
-
-
-
-
-
-
 // UPDATED: Better project info extraction
 getTaskProjectInfo(task) {
   if (task.projects && task.projects.length > 0) {
@@ -989,49 +918,6 @@ getTaskProjectName(task) {
   return null;
 }
 
-// UPDATED: Enhanced insights with project context
-generateFocusedDailyInsights({ events, tasks, overdue, timezone, projectCount }) {
-  const insights = [];
-  
-  // Calendar-first insights
-  if (events.length === 0) {
-    insights.push("Clear calendar today - perfect for tackling those overdue tasks.");
-  } else if (events.length >= 4) {
-    insights.push("Heavy meeting day - block 15-min buffers between calls.");
-  } else if (events.length >= 2) {
-    insights.push("Solid meeting schedule - good mix of collaboration and focus time.");
-  }
-  
-  // Enhanced task insights with project context
-  if (overdue.length > 15) {
-    insights.push(`Major backlog across ${projectCount} projects - consider doing a priority triage session.`);
-  } else if (overdue.length > 5) {
-    insights.push("Focus on clearing overdue tasks before starting new work.");
-  }
-  
-  if (projectCount > 4) {
-    insights.push("Multi-project day - consider batching work by project for better focus.");
-  }
-  
-  if (tasks.length > 10) {
-    insights.push("Ambitious task list - pick your top 3 priorities for today.");
-  }
-  
-  // Time management
-  const now = new Date();
-  const hour = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getHours();
-  
-  if (hour < 9 && events.length > 0) {
-    insights.push("Early start - prep for your first meeting with coffee in hand.");
-  }
-  
-  // Back-to-back meeting detection
-  if (this.hasBackToBackMeetings(events, timezone)) {
-    insights.push("Back-to-back meetings ahead - schedule bathroom/stretch breaks.");
-  }
-  
-  return insights.length > 0 ? insights.join(' ') : null;
-}
   // NEW: Calendar rundown for specific periods
   async handleCalendarRundown({ slots, client, channel, thread_ts, userId }) {
     try {
@@ -1223,72 +1109,6 @@ generateFocusedDailyInsights({ events, tasks, overdue, timezone, projectCount })
       console.error('Error getting next meeting:', error);
       return null;
     }
-  }
-
-  // NEW: Generate intelligent daily insights
-  generateDailyInsights({ events, tasks, overdue, timezone }) {
-    const insights = [];
-    
-    // Meeting density analysis
-    if (events.length >= 5) {
-      insights.push("Heavy meeting day - block buffer time between calls.");
-    } else if (events.length >= 3) {
-      insights.push("Solid meeting day - consider prepping in batches.");
-    } else if (events.length === 0) {
-      insights.push("Clear calendar day - perfect for deep project work.");
-    }
-    
-    // Task management insights
-    if (overdue.length > 3) {
-      insights.push("Priority alert: Clear overdue tasks before starting new work.");
-    } else if (overdue.length > 0) {
-      insights.push("Quick wins: Tackle those overdue tasks first.");
-    }
-    
-    if (tasks.length > 7) {
-      insights.push("Ambitious task list - focus on the top 3 priorities.");
-    } else if (tasks.length === 0 && events.length === 0) {
-      insights.push("Light day ahead - good time for strategic planning.");
-    }
-    
-    // Time management based on current hour
-    const now = new Date();
-    const hour = new Date(now.toLocaleString('en-US', { timeZone: timezone })).getHours();
-    
-    if (hour < 9 && events.length > 0) {
-      insights.push("Early start - grab coffee and prep for your first meeting.");
-    } else if (hour >= 9 && hour < 12 && events.filter(e => {
-      const eventHour = new Date(e.start.dateTime).getHours();
-      return eventHour < 12;
-    }).length >= 2) {
-      insights.push("Morning is packed - energy drinks and focused execution.");
-    }
-    
-    // Meeting pattern insights
-    const backToBackMeetings = this.hasBackToBackMeetings(events, timezone);
-    if (backToBackMeetings) {
-      insights.push("Back-to-back meetings detected - schedule 5-min breaks.");
-    }
-    
-    return insights.length > 0 ? insights.join(' ') : null;
-  }
-
-  // Helper: Check for back-to-back meetings
-  hasBackToBackMeetings(events, timezone) {
-    if (events.length < 2) return false;
-    
-    for (let i = 0; i < events.length - 1; i++) {
-      const currentEnd = new Date(events[i].end.dateTime);
-      const nextStart = new Date(events[i + 1].start.dateTime);
-      
-      // Less than 15 minutes between meetings = back-to-back
-      const timeBetween = (nextStart - currentEnd) / (1000 * 60);
-      if (timeBetween < 15) {
-        return true;
-      }
-    }
-    
-    return false;
   }
 
   // Helper: Format time until next event (unchanged)

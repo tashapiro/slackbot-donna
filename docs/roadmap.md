@@ -80,16 +80,19 @@ Each phase is independently shippable; after Phase 1 everything else is additive
 
 ## To-dos for this branch
 
-### Phase 0 — Cleanup (safe, non-breaking)
+### Phase 0 — Cleanup (safe, non-breaking) ✅ done
 
-- [ ] Delete `brain.js` (dead code — superseded by `utils/intentClassifier.js`; only `app.js`
-      is wired to the classifier). Confirm nothing `require`s it.
-- [ ] Deduplicate `handlers/calendar.js`: `generateProjectRollup` is defined twice (~L790 and
-      ~L884) — keep one; consolidate the three near-duplicate insight helpers
-      (`generatePeriodInsights`, `generateFocusedDailyInsights`, `generateDailyInsights`).
-- [ ] Remove committed `.DS_Store` files and confirm `.gitignore` covers them.
-- [ ] (Optional) add a minimal smoke/test script so future changes are verifiable
-      (`package.json` currently has no real `test`).
+- [x] Delete `brain.js` (dead code — superseded by `utils/intentClassifier.js`; nothing
+      `require`d it).
+- [x] Deduplicate `handlers/calendar.js`: removed the shadowing second `generateProjectRollup`
+      (kept the `periodTasks` version the renderer actually reads — the removed copy wrote
+      `todayTasks`, so the detailed daily-rundown breakdown had been silently dropping period
+      tasks); removed the two dead insight helpers (`generateFocusedDailyInsights`,
+      `generateDailyInsights`) and the now-unused `hasBackToBackMeetings`. `generatePeriodInsights`
+      is the one live helper. (calendar.js: 1318 → 1138 lines.)
+- [x] Remove committed `.DS_Store` files and ensure `.gitignore` covers them.
+- [x] Add a minimal smoke test — `npm test` (`scripts/check-syntax.js`) syntax-checks every
+      project `.js` file. Still no real behavioral suite; that comes with the Phase 1 rebuild.
 
 > Note: the canned-personality arrays and the hardcoded email templater are intentionally
 > **not** deleted in Phase 0 — removing them would leave the current bot broken. They're
