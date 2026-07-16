@@ -11,6 +11,7 @@ conversation and turn its action items into Asana tasks.
 - [Thread context & task extraction](#thread-context--task-extraction)
 - [Integrations](#integrations)
 - [Setup & configuration](#setup--configuration)
+- [Deployment](#deployment)
 - [Project layout](#project-layout)
 
 > **Where Donna is headed:** see [`roadmap.md`](./roadmap.md) for the evolution plan —
@@ -193,6 +194,27 @@ Donna has two interchangeable brains for open-ended messages, selected by `BRAIN
 
 > `AGENT_MODE` must be `true` (and `OPENAI_API_KEY` set) for anything beyond the exact
 > `schedule "…" 30` command and simple greetings. Without it, Donna falls back to basics.
+
+## Deployment
+
+Donna is hosted on **[Render](https://render.com)** as a long-running Node service (started
+with `npm start` → `node app.js`). Practical notes:
+
+- **Environment variables live in the Render dashboard**, not in a committed `.env`. Any new
+  config must be added there to take effect in production. In particular, to turn on the
+  agentic Claude brain you must set `ANTHROPIC_API_KEY`, `BRAIN=agentic`, and (optionally)
+  `DONNA_MODEL` on the Render service.
+- **Run mode must match the Render service type.** `app.js` supports Slack **Socket Mode**
+  (`SOCKET_MODE=true`, an outbound WebSocket — fits a Render **Background Worker**, no public
+  port needed) or **HTTP mode** (an Express receiver bound to `PORT`, which Render provides —
+  fits a Render **Web Service** with the Slack request URL pointed at it).
+- **State is in-memory** (`utils/dataStore.js`), so every Render deploy or restart wipes thread
+  state and caches. This is the main reason **memory (Phase 2 in the roadmap)** matters —
+  persisting it will need a Render Disk or an external store, not the container filesystem
+  (which is also reset on deploy).
+- **Proactivity (Phase 4)** — Render **Cron Jobs** are a natural fit for scheduled work (the
+  morning brief, follow-up nudges), or an in-process scheduler (e.g. `node-cron`) inside the
+  worker.
 
 ## Project layout
 

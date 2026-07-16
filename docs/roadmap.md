@@ -70,9 +70,9 @@ it makes every future capability cheap to add.
 |------|-------|---------|
 | **0** | Cleanup | Remove dead code / dupes so the rebuild starts clean. Non-breaking. |
 | **1** | Agentic core | Tool Runner loop on Sonnet 5 + real personality prompt; existing services as tools. Multi-step + natural conversation start working. Runs alongside the old router behind a flag. |
-| **2** | Memory | Persistence so she remembers people, preferences, commitments across restarts (Claude memory tool is a clean fit). |
+| **2** | Memory | Persistence so she remembers people, preferences, commitments across restarts (Claude memory tool is a clean fit). Must survive Render redeploys — a Render Disk or external store, not the container filesystem. |
 | **3** | Priority functions | Email (draft + send, triage), Fireflies-direct for meetings/notes, deeper client/project tracking — each added as a tool. |
-| **4** | Proactivity | Scheduler (node-cron) for the morning brief, follow-up nudges, meeting prep — reusing the daily-rundown logic. |
+| **4** | Proactivity | Scheduler for the morning brief, follow-up nudges, meeting prep — reusing the daily-rundown logic. Render Cron Jobs, or an in-process `node-cron` inside the worker. |
 
 Each phase is independently shippable; after Phase 1 everything else is additive.
 

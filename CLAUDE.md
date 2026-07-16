@@ -48,8 +48,17 @@ node -c <file.js>      # syntax check (there is no real test suite yet)
 ```
 
 - `AGENT_MODE=true` + `OPENAI_API_KEY` are required for anything beyond exact commands.
+- `BRAIN=agentic` + `ANTHROPIC_API_KEY` switch on the Claude Tool Runner brain (`utils/donnaBrain.js`).
 - Thread reading needs Slack history scopes (`channels:history`, `groups:history`,
   `im:history`, `mpim:history`).
+
+## Deployment
+
+Donna is hosted on **Render** as a long-running Node service (`npm start`). Env vars are set
+in the **Render dashboard** (not a committed `.env`) — new config must be added there to take
+effect in production. In-memory `dataStore` is wiped on every deploy/restart. Run mode
+(`SOCKET_MODE`) must match the Render service type (Background Worker for socket mode, Web
+Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
 
 ## Conventions & gotchas
 
