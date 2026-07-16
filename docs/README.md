@@ -234,7 +234,7 @@ utils/
   intentClassifier.js      OpenAI router brain: LLM intent + slot extraction
   donnaBrain.js            Agentic (Claude) brain: Tool Runner loop  [BRAIN=agentic]
   donnaPrompt.js           Donna's personality + operating rules (system prompt)
-  donnaTools.js            Agentic tools wrapping the services (read + propose_tasks)
+  donnaTools.js            Agentic tools wrapping the services (reads + propose_tasks/propose_meeting)
   taskExtractor.js         LLM action-item extraction (thread → tasks, router path)
   threadReader.js          Read + format a Slack thread transcript
   dataStore.js             In-memory per-thread state & caches

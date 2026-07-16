@@ -1133,6 +1133,89 @@ getTaskProjectName(task) {
       }
     }
   }
+
+  // ── Agentic calendar-write flow ─────────────────────────────────────────────
+  // Preview a proposed event (from the propose_meeting tool), then create it on
+  // confirm. Mirrors the task preview/confirm flow in handlers/projects.js.
+
+  // Build the preview card (event summary + Create/Cancel buttons)
+  buildEventPreviewBlocks(event, stableTs, timezone) {
+    const start = new Date(event.startTime);
+    const end = new Date(event.endTime);
+    const dateStr = start.toLocaleDateString('en-US', {
+      weekday: 'long', month: 'long', day: 'numeric', timeZone: timezone
+    });
+    const fmt = d => d.toLocaleTimeString('en-US', {
+      hour: 'numeric', minute: '2-digit', hour12: true, timeZone: timezone
+    });
+
+    let detail = `*${event.summary}*\n📅 ${dateStr}\n🕐 ${fmt(start)} – ${fmt(end)}`;
+    if (event.attendees && event.attendees.length) detail += `\n👥 ${event.attendees.join(', ')}`;
+    if (event.location) detail += `\n📍 ${event.location}`;
+    if (event.description) detail += `\n📝 ${event.description}`;
+
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text: `*Event to add to your calendar:*\n\n${detail}` } },
+      {
+        type: 'actions',
+        elements: [
+          { type: 'button', text: { type: 'plain_text', text: 'Create event' }, style: 'primary', action_id: 'donna_create_event', value: stableTs },
+          { type: 'button', text: { type: 'plain_text', text: 'Cancel' }, style: 'danger', action_id: 'donna_cancel_event', value: stableTs }
+        ]
+      }
+    ];
+  }
+
+  // Create the pending event in Google Calendar (triggered by the Create button)
+  async confirmPendingEvent({ client, channel, thread_ts, userId }) {
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    const pending = threadData.pending_event;
+
+    if (!pending) {
+      return await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: 'That event already cleared out — nothing pending to create.'
+      });
+    }
+
+    try {
+      const timeZone = pending.timeZone || await TimezoneHelper.getUserTimezone(client, userId);
+      const event = await googleCalendarService.createEvent({
+        summary: pending.summary,
+        description: pending.description || '',
+        startTime: pending.startTime,
+        endTime: pending.endTime,
+        attendees: pending.attendees || [],
+        location: pending.location || '',
+        meetingType: pending.meetingType || null,
+        timeZone
+      });
+
+      dataStore.setThreadData(channel, thread_ts, {
+        pending_event: null,
+        last_action: 'created_calendar_event',
+        last_action_time: Date.now()
+      });
+
+      const start = new Date(event.start.dateTime);
+      const timeStr = start.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone });
+      const dateStr = start.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone });
+
+      let message = `✅ Added to your calendar: *${event.summary}*\n📅 ${dateStr} at ${timeStr}`;
+      const link = googleCalendarService.extractMeetingLink(event);
+      if (link) message += `\n🔗 ${link}`;
+
+      await client.chat.postMessage({ channel, thread_ts, text: message });
+    } catch (error) {
+      console.error('Confirm pending event error:', error);
+      await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Sorry, I couldn't create that event: ${error.message}`
+      });
+    }
+  }
 }
 
 module.exports = new CalendarHandler();
