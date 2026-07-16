@@ -160,7 +160,23 @@ PROJECTS:
 - "update_task" -> slots: { "task_id": string, "field": string, "value": string }
 - "create_task" -> slots: { "name": string, "project": string?, "due_date": string?, "notes": string? }
 - "complete_task" -> slots: { "task_id": string }
+- "extract_tasks" -> slots: { "project": string? } (read the surrounding conversation/thread and turn its action items into Asana tasks)
 - "daily_rundown" -> slots: {} (project-focused daily summary - handled by projects handler)
+
+EXTRACT_TASKS RECOGNITION (thread-aware task creation):
+Use "extract_tasks" when the user wants you to pull action items out of the CONVERSATION
+itself and add them to Asana, rather than dictating a single task by hand. The thread's
+messages are provided to you in context as thread_history (this often includes a recap or
+action items posted by a meeting bot like Fireflies/Fred). Recognize patterns like:
+- "add these to my asana" / "add these action items to asana"
+- "make tasks from this call" / "turn these into tasks"
+- "create action items from this thread"
+- "@Donna capture these follow-ups in asana"
+- "add the action items from Fred's summary to [Project]"
+If the user names a project, put it in slots.project; otherwise leave it out (Donna will
+ask which project to use). Prefer "create_task" only when the user is clearly dictating a
+single specific task themselves ("create a task called X"). Prefer "extract_tasks" when
+they're pointing at the conversation ("these", "this call", "the action items above").
 
 GENERAL (for conversation, advice, email drafting, etc.):
 - "general_chat" -> slots: { "message": string } (use this for conversation, advice, email drafting, writing assistance)

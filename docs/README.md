@@ -1,0 +1,197 @@
+# Donna — how she works
+
+Donna is a Slack bot (a "chief-of-staff" assistant, styled after Donna Paulsen from
+*Suits*) that turns natural-language Slack messages into actions across your tools:
+scheduling links, time tracking, task management, calendar, and workouts. She now also
+**reads the thread she's mentioned in** so she can answer questions about the
+conversation and turn its action items into Asana tasks.
+
+- [Architecture](#architecture)
+- [What Donna can do](#what-donna-can-do)
+- [Thread context & task extraction](#thread-context--task-extraction)
+- [Integrations](#integrations)
+- [Setup & configuration](#setup--configuration)
+- [Project layout](#project-layout)
+
+---
+
+## Architecture
+
+Donna is a [Slack Bolt](https://slack.dev/bolt-js) app. The flow for any message is:
+
+```
+Slack event (app_mention / message)
+        │
+        ▼
+processDonnaMessage()            ← app.js
+        │   ├─ fast paths (exact commands, greetings)
+        │   ├─ read the thread transcript  ← utils/threadReader.js
+        │   ▼
+IntentClassifier.classify()      ← utils/intentClassifier.js  (LLM → {intent, slots, response})
+        │
+        ▼
+handleIntent(intent, slots, …)   ← app.js  (switch → the right handler)
+        │
+        ▼
+handlers/*.js  →  services/*.js  →  external API
+```
+
+- **Intent classification** is done by an LLM (OpenAI, `gpt-4o-mini` by default). It
+  reads the message *plus context* (recent actions, timezone, and now the thread
+  transcript) and returns a single `intent`, its `slots`, and an optional `response`.
+- **Handlers** own the logic for a domain (scheduling, projects, calendar, …) and call
+  the matching **service**, which wraps one external API.
+- **State** lives in `utils/dataStore.js` — an in-memory, per-thread store
+  (`channel::thread_ts → {…}`). It holds recent actions, cached API data, and pending
+  confirmations. It resets on restart (nothing is persisted yet).
+
+> Note: `brain.js` is an earlier, simpler router that has been superseded by
+> `utils/intentClassifier.js`. It is kept for reference but not used by `app.js`.
+
+## What Donna can do
+
+| Area | Example message | Intent |
+|------|-----------------|--------|
+| Scheduling (SavvyCal) | `schedule "Intro with Acme" 30` | `schedule_oneoff` |
+| | "list my links", "disable that link" | `list_links`, `disable_link` |
+| Time tracking (Toggl) | "log 2 hours to Client X yesterday" | `log_time` |
+| | "how much time did I track this week?" | `query_time` |
+| Tasks (Asana) | "what are my tasks this week?" | `list_tasks` |
+| | "create a task Review proposal for Acme" | `create_task` |
+| | **"add these action items to Asana"** | **`extract_tasks`** |
+| Calendar (Google) | "what's on my calendar tomorrow?" | `check_calendar` |
+| | "block 2–4pm Friday for deep work" | `block_time` |
+| | "meeting with John at 2pm tomorrow" | `create_meeting` |
+| | "give me the daily rundown" | `daily_rundown` |
+| Workouts (Peloton) | "recommend a 30min yoga class" | `workout_recommendation` |
+| Conversation | "draft an email to Maura about the project" | `general_chat` |
+
+Donna responds **in a thread** when mentioned in a channel, and stays "active" in that
+thread for 24 hours so you can keep talking to her without re-mentioning. In DMs she
+replies directly.
+
+## Thread context & task extraction
+
+This is the newest capability. When you `@Donna` **inside a thread**, she first reads the
+whole thread (via Slack's `conversations.replies`) — including messages posted by bots
+like **Fireflies / "Fred"** — and builds a transcript. That transcript is fed to the LLM,
+so Donna understands what was said *before* you tagged her.
+
+Two things this unlocks:
+
+**1. Answer questions about the conversation.** e.g. after a Fred call recap:
+> "@Donna what did we agree on for the launch date?"
+
+**2. Turn action items into Asana tasks.** e.g.:
+> "@Donna add these action items to my Asana under Client Acme"
+
+The task flow is **preview-then-confirm** (Donna never writes to Asana silently):
+
+```
+@Donna add these to Asana [under <Project>]
+        │
+        ▼
+Reads thread → extracts action items   ← utils/taskExtractor.js (dedicated LLM pass)
+        │
+        ├─ project named?  → resolve it
+        └─ not named?      → Donna asks "which project?" and waits for your reply
+        │
+        ▼
+Posts a preview: numbered task list + [Create all] [Cancel] buttons
+        │
+        ▼
+You click "Create all"  → tasks created in Asana, Donna reports what landed
+```
+
+Design choices (confirmed with the product owner):
+- **Source:** Donna reads the Slack thread — whatever's there — so this works for any
+  thread, not just Fireflies. She does not call the Fireflies API directly.
+- **Confirmation:** always preview first; tasks are only created on the button click.
+- **Project routing:** if you name a project she uses it; otherwise she asks. There is no
+  silent default project.
+- **Assignee:** extracted tasks are assigned to you (the Asana token owner). If an item
+  clearly belongs to someone else, Donna notes that in the task, but still assigns to you.
+
+Relevant code:
+- `utils/threadReader.js` — fetch + format the thread transcript.
+- `utils/taskExtractor.js` — the extraction LLM pass (`{name, notes, due, assignee_hint}`).
+- `handlers/projects.js` — `handleExtractTasks`, `handleTaskProjectResponse`,
+  `confirmPendingTasks`, and the preview blocks.
+- `app.js` — transcript read on each message, the "waiting for a project" follow-up
+  interception, and the `donna_create_tasks` / `donna_cancel_tasks` button handlers.
+
+**Limitation:** thread reading needs a thread. In a plain DM with no threads, Donna has
+no `thread_ts` to read from, so extraction there will report it has nothing to read.
+
+## Integrations
+
+| Service | Wraps | Env vars |
+|---------|-------|----------|
+| Slack | Bolt app (socket or HTTP) | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_APP_TOKEN` (socket) |
+| OpenAI | Intent routing + task extraction | `OPENAI_API_KEY`, `ROUTER_MODEL`, `EXTRACT_MODEL` |
+| SavvyCal | Scheduling links | `SAVVYCAL_TOKEN` |
+| Toggl | Time tracking | (see `services/toggl.js`) |
+| Asana | Tasks & projects | `ASANA_API_TOKEN`, `ASANA_WORKSPACE_ID` |
+| Google Calendar | Calendar | (see `services/googleCalendar.js`) |
+| Peloton | Workouts | (see `services/peloton.js`) |
+
+### Required Slack scopes
+
+For Donna to read threads she needs message-history scopes on the Slack app, in addition
+to her usual `app_mentions:read`, `chat:write`, `users:read`, `commands`:
+
+- `channels:history` — public channels
+- `groups:history` — private channels
+- `im:history` — DMs
+- `mpim:history` — group DMs
+
+Add these under **OAuth & Permissions** in your Slack app config, then reinstall the app
+to the workspace so the new scopes take effect.
+
+## Setup & configuration
+
+```bash
+npm install
+cp .env.example .env   # if present; otherwise create .env with the vars below
+npm run dev            # starts app.js
+```
+
+Key environment variables:
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `SOCKET_MODE` | `true` for Socket Mode, else HTTP | — |
+| `PORT` | HTTP port | `3000` |
+| `AGENT_MODE` | `true` to enable LLM intent routing | — |
+| `OPENAI_API_KEY` | OpenAI auth | — |
+| `ROUTER_MODEL` | Model for intent classification | `gpt-4o-mini` |
+| `EXTRACT_MODEL` | Model for action-item extraction | `gpt-4o` |
+| `ASANA_API_TOKEN` / `ASANA_WORKSPACE_ID` | Asana auth / workspace | — |
+| `SAVVYCAL_TOKEN` | SavvyCal auth | — |
+
+> `AGENT_MODE` must be `true` (and `OPENAI_API_KEY` set) for anything beyond the exact
+> `schedule "…" 30` command and simple greetings. Without it, Donna falls back to basics.
+
+## Project layout
+
+```
+app.js                     Slack wiring, message routing, intent dispatch, buttons
+brain.js                   Legacy router (superseded by utils/intentClassifier.js)
+handlers/
+  scheduling.js            SavvyCal link intents
+  timeTracking.js          Toggl intents
+  projects.js              Asana intents + thread task extraction
+  calendar.js              Google Calendar intents + daily rundown
+  workout.js               Peloton intents
+services/
+  savvycal.js  toggl.js  asana.js  googleCalendar.js  peloton.js
+utils/
+  intentClassifier.js      LLM intent + slot extraction
+  taskExtractor.js         LLM action-item extraction (thread → tasks)
+  threadReader.js          Read + format a Slack thread transcript
+  dataStore.js             In-memory per-thread state & caches
+  errorHandler.js          Standardized error messages
+  timezoneHelper.js        Per-user timezone handling
+docs/
+  README.md                This file
+```
