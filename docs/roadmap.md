@@ -128,5 +128,13 @@ Still to do in Phase 1:
 
 ---
 
+## How we work through the phases
+
+- **One phase per branch**, cut from `main`, merged back via PR once tested. Keep each branch
+  small and focused.
+- Update the docs in the same branch as the code: `.env.example` (new config),
+  `docs/README.md` (behavior), this roadmap (tick off to-dos), and `CLAUDE.md` (conventions).
+- After a phase merges, start the next from a fresh `main`.
+
 _See [`README.md`](./README.md) for how Donna works today. Keep this roadmap updated as phases
 land._

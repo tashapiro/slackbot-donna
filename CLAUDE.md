@@ -76,6 +76,13 @@ Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
 
 ## Git workflow
 
-- Active feature branch: **`claude/donna-context-asana-7tkl2c`**. Develop here; commit with
-  clear messages; push with `git push -u origin <branch>`.
-- Don't open a PR unless asked. Don't push to `main` without explicit permission.
+- **One phase per branch.** Each roadmap phase (see `docs/roadmap.md`) gets its own
+  short-lived branch off `main`, merged back via PR once it's tested. Keep branches small and
+  focused rather than long-running.
+- **Update docs in the same branch as the code they describe:** `.env.example` for any new
+  config, `docs/README.md` for behavior / how-it-works, `docs/roadmap.md` to tick off phase
+  to-dos, and this file when conventions change.
+- Commit with clear messages; push with `git push -u origin <branch>`.
+- Don't open a PR or push to `main` without explicit permission.
+- Current working branch: `claude/donna-context-asana-7tkl2c` (thread-context feature +
+  Phase 0 cleanup + Phase 1 agentic spike). Update this line when a new phase branch starts.
