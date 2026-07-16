@@ -7,6 +7,8 @@ const IntentClassifier = require('./utils/intentClassifier');
 const dataStore = require('./utils/dataStore');
 const ErrorHandler = require('./utils/errorHandler');
 const TimezoneHelper = require('./utils/timezoneHelper');
+const { fetchThreadTranscript } = require('./utils/threadReader');
+const donnaBrain = require('./utils/donnaBrain');
 
 // Service imports
 const savvyCalService = require('./services/savvycal');
@@ -37,6 +39,13 @@ const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const SAVVYCAL_TOKEN = (process.env.SAVVYCAL_TOKEN || '').trim();
 
 const AGENT_MODE = String(process.env.AGENT_MODE).toLowerCase() === 'true';
+// Which brain to use for open-ended messages: 'agentic' → Claude Tool Runner
+// (utils/donnaBrain.js); anything else → the existing OpenAI intent router.
+const BRAIN = String(process.env.BRAIN || '').toLowerCase();
+
+// Donna's own Slack user ID, resolved at startup. Used to label her own messages
+// when reading a thread transcript so she doesn't mistake them for the user's.
+let BOT_USER_ID = null;
 
 // Validation
 const must = ['SLACK_BOT_TOKEN', 'SLACK_SIGNING_SECRET', 'SAVVYCAL_TOKEN'];
@@ -499,6 +508,11 @@ async function handleIntent(intent, slots, client, channel, thread_ts, response 
       case 'create_task':
         await ErrorHandler.wrapHandler(projectHandler.handleCreateTask.bind(projectHandler), 'Asana')(params);
         break;
+
+      // Read the thread's action items and turn them into Asana tasks (preview + confirm)
+      case 'extract_tasks':
+        await ErrorHandler.wrapHandler(projectHandler.handleExtractTasks.bind(projectHandler), 'Asana')(params);
+        break;
         
       case 'complete_task':
         await ErrorHandler.wrapHandler(async (params) => {
@@ -655,6 +669,16 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     });
   }
 
+  // If Donna extracted tasks and is waiting for the user to name a project,
+  // treat this reply as the answer (project name, or a cancel).
+  const pendingData = dataStore.getThreadData(channel, responseThreadTs);
+  if (pendingData.pending_tasks_await_project && pendingData.pending_tasks?.length) {
+    await ErrorHandler.wrapHandler(projectHandler.handleTaskProjectResponse.bind(projectHandler), 'Asana')({
+      slots: { answer: text }, client, channel, thread_ts: responseThreadTs, userId: user
+    });
+    return;
+  }
+
   // Fast path for very specific, unambiguous commands only
   if (text.match(/^what projects|^list projects|^show.*projects$/i)) {
     await ErrorHandler.wrapHandler(projectHandler.handleListProjects.bind(projectHandler), 'Asana')({
@@ -690,6 +714,22 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     }
   }
 
+  // Agentic brain (Claude Tool Runner) — Phase 1 spike, gated behind BRAIN=agentic.
+  // Runs alongside the OpenAI router; when enabled it handles everything past the
+  // exact-command fast paths above.
+  if (BRAIN === 'agentic' && donnaBrain.isEnabled()) {
+    await donnaBrain.handleMessage({
+      text,
+      client,
+      channel,
+      thread_ts: responseThreadTs,
+      userId: user,
+      botUserId: BOT_USER_ID,
+      logger
+    });
+    return;
+  }
+
   // Let the LLM handle everything else with intelligent classification
 
   // Enhanced agentic path
@@ -702,6 +742,18 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
   }
 
   try {
+    // Read the thread so Donna understands what was said before she was tagged
+    // (e.g. a Fireflies/Fred recap). Stored on the thread so handlers can reuse it.
+    if (responseThreadTs) {
+      const transcript = await fetchThreadTranscript(client, channel, responseThreadTs, { botUserId: BOT_USER_ID });
+      if (transcript.length) {
+        dataStore.setThreadData(channel, responseThreadTs, {
+          recent_messages: transcript.map(m => ({ author: m.author, text: m.text }))
+        });
+        console.log(`🧵 Read ${transcript.length} message(s) from thread ${channel}::${responseThreadTs}`);
+      }
+    }
+
     const threadData = dataStore.getThreadData(channel, responseThreadTs);
     const userTimezone = await TimezoneHelper.getUserTimezone(client, user); // Get user timezone
     
@@ -803,6 +855,35 @@ app.action('sc_disable', async ({ ack, body, client }) => {
   }
 });
 
+// Confirm creation of the tasks Donna extracted from a thread
+app.action('donna_create_tasks', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await ErrorHandler.wrapHandler(projectHandler.confirmPendingTasks.bind(projectHandler), 'Asana')({
+    client, channel, thread_ts, userId: body.user?.id
+  });
+});
+
+// Cancel the pending task extraction
+app.action('donna_cancel_tasks', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  dataStore.setThreadData(channel, thread_ts, {
+    pending_tasks: null,
+    pending_tasks_project: null,
+    pending_tasks_await_project: false
+  });
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text: "Scrapped it — nothing added to Asana. Say the word if you change your mind."
+  });
+});
+
 app.action('sc_details', async ({ ack, body, client }) => {
   await ack();
   const linkId = body.actions?.[0]?.value;
@@ -868,6 +949,26 @@ setInterval(() => {
 (async () => {
   await app.start(PORT);
   console.log(`⚡ Donna Paulsen is now online in ${SOCKET_MODE ? 'Socket' : 'HTTP'} mode on :${PORT}`);
+
+  // Resolve Donna's own user ID so she can recognize her own messages when reading threads
+  try {
+    const auth = await app.client.auth.test();
+    BOT_USER_ID = auth.user_id;
+    console.log(`🪪 Donna's user ID: ${BOT_USER_ID}`);
+  } catch (error) {
+    console.warn('⚠️ Could not resolve bot user ID:', error.message);
+  }
+
+  // Report which brain is handling open-ended messages
+  if (BRAIN === 'agentic') {
+    if (donnaBrain.isEnabled()) {
+      console.log(`🧠 Brain: agentic (Claude Tool Runner, model ${donnaBrain.MODEL})`);
+    } else {
+      console.warn('⚠️ BRAIN=agentic but the agentic brain is not ready (missing ANTHROPIC_API_KEY or SDK) — falling back to the OpenAI router.');
+    }
+  } else {
+    console.log('🧠 Brain: OpenAI intent router (set BRAIN=agentic to use the Claude Tool Runner)');
+  }
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   console.log('🌍 Now with timezone-aware calendar support - respecting every user\'s local time');
   console.log('🧠 Enhanced with context-aware general conversation - helping you draft emails, coordinate projects & more');

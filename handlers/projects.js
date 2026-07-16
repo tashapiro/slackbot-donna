@@ -1,6 +1,7 @@
 // handlers/projects.js - Handle project management and task intents
 const asanaService = require('../services/asana');
 const dataStore = require('../utils/dataStore');
+const taskExtractor = require('../utils/taskExtractor');
 
 class ProjectHandler {
   // Handle task listing requests
@@ -296,6 +297,230 @@ class ProjectHandler {
         text: `Sorry, I couldn't create that task: ${error.message}`
       });
     }
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Thread-aware task extraction: read the conversation, propose Asana tasks,
+  // confirm before writing. Flow:
+  //   handleExtractTasks -> preview (+ optional "which project?")
+  //     -> handleTaskProjectResponse (if project was needed)
+  //     -> confirmPendingTasks (on button click) writes to Asana.
+  // ───────────────────────────────────────────────────────────────────────────
+
+  // Read the thread transcript and propose tasks from its action items
+  async handleExtractTasks({ slots, client, channel, thread_ts }) {
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    const transcript = threadData.recent_messages || [];
+
+    if (!transcript.length) {
+      return await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: "I can't see any conversation to pull tasks from. Tag me in a thread that has the details — like Fred's call recap — or just tell me what to capture."
+      });
+    }
+
+    await client.chat.postMessage({ channel, thread_ts, text: 'Reading the thread…' });
+
+    const formatted = transcript.map(m => `${m.author}: ${m.text}`).join('\n');
+    const tasks = await taskExtractor.extract({ transcript: formatted });
+
+    if (!tasks.length) {
+      return await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: "I read through it and didn't spot any clear action items. Point me at the specific part, or dictate the task yourself and I'll add it."
+      });
+    }
+
+    // Resolve a project if the user named one
+    let resolvedProject = null;
+    let projectNotFound = false;
+    if (slots.project) {
+      resolvedProject = await asanaService.findProject(slots.project);
+      if (!resolvedProject) projectNotFound = true;
+    }
+
+    // Stash candidates on the thread for the confirm/cancel step
+    dataStore.setThreadData(channel, thread_ts, {
+      pending_tasks: tasks,
+      pending_tasks_project: resolvedProject ? { gid: resolvedProject.gid, name: resolvedProject.name } : null,
+      pending_tasks_await_project: !resolvedProject,
+      pending_tasks_time: Date.now()
+    });
+
+    const stableTs = thread_ts || 'root';
+
+    // Happy path: project known, show preview with confirm buttons
+    if (resolvedProject) {
+      return await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Here's what I pulled from the thread — ${tasks.length} action item${tasks.length === 1 ? '' : 's'} for ${resolvedProject.name}.`,
+        blocks: this.buildTaskPreviewBlocks(tasks, resolvedProject.name, stableTs)
+      });
+    }
+
+    // Need a project — show the items and ask (per "you name it, else she asks")
+    let ask = `Here's what I pulled from the thread — ${tasks.length} action item${tasks.length === 1 ? '' : 's'}:\n\n${this.formatTaskList(tasks)}\n\n`;
+    ask += projectNotFound
+      ? `I couldn't find a project called "${slots.project}". Which project should these go in? (Reply with the name, or "cancel".)`
+      : `Which Asana project should these go in? Just reply with the name — or "cancel" to drop it.`;
+
+    return await client.chat.postMessage({ channel, thread_ts, text: ask });
+  }
+
+  // Handle the user's reply when Donna asked which project to use
+  async handleTaskProjectResponse({ slots, client, channel, thread_ts }) {
+    const answer = (slots.answer || '').trim();
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    const tasks = threadData.pending_tasks || [];
+
+    if (!tasks.length) {
+      // Nothing pending; clear the flag and let normal handling resume next time
+      dataStore.setThreadData(channel, thread_ts, { pending_tasks_await_project: false });
+      return;
+    }
+
+    if (/^(cancel|nvm|never ?mind|forget it|stop|no)$/i.test(answer)) {
+      dataStore.setThreadData(channel, thread_ts, {
+        pending_tasks: null,
+        pending_tasks_project: null,
+        pending_tasks_await_project: false
+      });
+      return await client.chat.postMessage({ channel, thread_ts, text: 'Dropped it — nothing added to Asana.' });
+    }
+
+    const resolvedProject = await asanaService.findProject(answer);
+    if (!resolvedProject) {
+      return await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: `Still can't find a project matching "${answer}". Try one of these (or say "cancel"):`,
+        blocks: await this.getProjectsBlock()
+      });
+    }
+
+    dataStore.setThreadData(channel, thread_ts, {
+      pending_tasks_project: { gid: resolvedProject.gid, name: resolvedProject.name },
+      pending_tasks_await_project: false
+    });
+
+    const stableTs = thread_ts || 'root';
+    return await client.chat.postMessage({
+      channel,
+      thread_ts,
+      text: `Got it — ${tasks.length} task${tasks.length === 1 ? '' : 's'} for ${resolvedProject.name}.`,
+      blocks: this.buildTaskPreviewBlocks(tasks, resolvedProject.name, stableTs)
+    });
+  }
+
+  // Create the pending tasks in Asana (triggered by the "Create all" button)
+  async confirmPendingTasks({ client, channel, thread_ts }) {
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    const tasks = threadData.pending_tasks || [];
+    const project = threadData.pending_tasks_project;
+
+    if (!tasks.length) {
+      return await client.chat.postMessage({
+        channel,
+        thread_ts,
+        text: 'Those tasks already cleared out — nothing pending to create.'
+      });
+    }
+
+    const projectIds = project ? [project.gid] : [];
+    const created = [];
+    const failed = [];
+
+    for (const t of tasks) {
+      try {
+        let due_on = null;
+        if (t.due) {
+          try { due_on = this.parseDateString(t.due); } catch { due_on = null; }
+        }
+        const nt = await asanaService.createTask({
+          name: t.name,
+          notes: t.notes || '',
+          projects: projectIds,
+          due_on
+        });
+        created.push(nt);
+      } catch (e) {
+        console.error(`Failed to create extracted task "${t.name}":`, e.message);
+        failed.push({ task: t, error: e.message });
+      }
+    }
+
+    // Clear pending state so buttons can't double-fire
+    dataStore.setThreadData(channel, thread_ts, {
+      pending_tasks: null,
+      pending_tasks_project: null,
+      pending_tasks_await_project: false,
+      last_action: 'created_tasks_from_thread',
+      last_action_time: Date.now()
+    });
+
+    let message = '';
+    if (created.length) {
+      message += `✅ Added ${created.length} task${created.length === 1 ? '' : 's'} to Asana${project ? ` in ${project.name}` : ''}:\n`;
+      message += created.map(t => `• *${t.name}*${t.due_on ? ` (due ${t.due_on})` : ''}`).join('\n');
+    }
+    if (failed.length) {
+      message += `${created.length ? '\n\n' : ''}⚠️ Couldn't create ${failed.length}:\n`;
+      message += failed.map(f => `• ${f.task.name} — ${f.error}`).join('\n');
+    }
+    if (!message) message = 'Nothing to create.';
+    if (created.length && !failed.length) message += `\n\nHandled. You're welcome.`;
+
+    return await client.chat.postMessage({ channel, thread_ts, text: message.trim() });
+  }
+
+  // Format extracted tasks as a numbered mrkdwn list
+  formatTaskList(tasks) {
+    return tasks.map((t, i) => {
+      let line = `${i + 1}. *${t.name}*`;
+      if (t.due) line += `  _(due ${t.due})_`;
+      if (t.assignee_hint) line += `  _— ${t.assignee_hint}_`;
+      if (t.notes) line += `\n     ${t.notes}`;
+      return line;
+    }).join('\n');
+  }
+
+  // Build the preview message (task list + Create/Cancel buttons)
+  buildTaskPreviewBlocks(tasks, projectName, stableTs) {
+    return [
+      {
+        type: 'section',
+        text: {
+          type: 'mrkdwn',
+          text: `*Action items from the thread*${projectName ? ` → *${projectName}*` : ''}:\n\n${this.formatTaskList(tasks)}`
+        }
+      },
+      {
+        type: 'section',
+        text: { type: 'mrkdwn', text: 'Want me to add these to Asana?' }
+      },
+      {
+        type: 'actions',
+        elements: [
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: tasks.length === 1 ? 'Create task' : 'Create all' },
+            style: 'primary',
+            action_id: 'donna_create_tasks',
+            value: stableTs
+          },
+          {
+            type: 'button',
+            text: { type: 'plain_text', text: 'Cancel' },
+            style: 'danger',
+            action_id: 'donna_cancel_tasks',
+            value: stableTs
+          }
+        ]
+      }
+    ];
   }
 
   // Generate daily rundown

@@ -4,13 +4,16 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node scripts/check-syntax.js",
+    "check": "node scripts/check-syntax.js",
+    "start": "node app.js",
     "dev": "node app.js"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.111.0",
     "@slack/bolt": "^4.4.0",
     "axios": "^1.11.0",
     "dotenv": "^17.2.1",
