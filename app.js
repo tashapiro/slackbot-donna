@@ -884,6 +884,31 @@ app.action('donna_cancel_tasks', async ({ ack, body, client }) => {
   });
 });
 
+// Confirm creation of the calendar event Donna proposed (agentic propose_meeting)
+app.action('donna_create_event', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await ErrorHandler.wrapHandler(calendarHandler.confirmPendingEvent.bind(calendarHandler), 'Google Calendar')({
+    client, channel, thread_ts, userId: body.user?.id
+  });
+});
+
+// Cancel the pending calendar event
+app.action('donna_cancel_event', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  dataStore.setThreadData(channel, thread_ts, { pending_event: null });
+  await client.chat.postMessage({
+    channel,
+    thread_ts,
+    text: 'Scrapped it — nothing added to your calendar.'
+  });
+});
+
 app.action('sc_details', async ({ ack, body, client }) => {
   await ack();
   const linkId = body.actions?.[0]?.value;

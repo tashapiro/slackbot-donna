@@ -117,14 +117,16 @@ Landed (the spike is wired and offline-verified; live run needs `ANTHROPIC_API_K
 
 Still to do in Phase 1:
 
-- [ ] Add a `propose_meeting` write tool (calendar events) following the same
-      preview-then-confirm pattern — the mechanical next tool now that the pattern is proven.
-- [ ] Once the agentic path is the default, retire the canned personality arrays and
-      `generateModernEmail` in `app.js`, and stop `handleGeneralChat` discarding the model's
-      response.
-- [ ] **Live verification** (needs `ANTHROPIC_API_KEY` + Slack): thread summarize/Q&A, and a
-      multi-step ask ("summarize this call, add the action items to Asana, and block 30 min to
-      review"). Tune `DONNA_MODEL` / effort for latency vs. quality.
+- [x] Add a `propose_meeting` write tool (calendar events) — same preview-then-confirm pattern
+      as `propose_tasks` (preview card + Create/Cancel buttons; creates the Google Calendar
+      event only on confirm via `calendarHandler.confirmPendingEvent`).
+- [x] **Live verification** — thread reading, extraction, and the agentic brain confirmed
+      working in production (`BRAIN=agentic`, Sonnet 5). Ongoing: tune `DONNA_MODEL` / effort
+      for latency vs. quality as you use it.
+- [ ] **Deferred until agentic becomes the default** (a separate milestone — the OpenAI router
+      is still the default and fallback, and this code is load-bearing for it): retire the
+      canned personality arrays and `generateModernEmail` in `app.js`, and stop
+      `handleGeneralChat` discarding the model's response.
 
 ---
 

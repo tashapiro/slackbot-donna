@@ -8,6 +8,7 @@ const asanaService = require('../services/asana');
 const googleCalendarService = require('../services/googleCalendar');
 const TimezoneHelper = require('./timezoneHelper');
 const projectHandler = require('../handlers/projects');
+const calendarHandler = require('../handlers/calendar');
 const dataStore = require('./dataStore');
 
 /**
@@ -202,6 +203,82 @@ function buildTools({ client, channel, thread_ts, userId }) {
           ? ` Note: no project named "${project}" was found, so ask the user which project to use.`
           : '';
         return `A preview of ${norm.length} task(s) is now shown to the user with Create / Cancel buttons.${projectNote} Do not take further action on these tasks — the user will confirm.`;
+      }
+    },
+
+    {
+      name: 'propose_meeting',
+      description:
+        'Propose a Google Calendar event. This does NOT create it — it shows the user a ' +
+        'preview card with Create / Cancel buttons, and they confirm. Use this whenever the ' +
+        'user wants to add a meeting, block time, or schedule an event. After calling it, ' +
+        'tell the user the preview is ready to confirm; do not claim the event is created.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Event title.' },
+          date: {
+            type: 'string',
+            description: 'Date — natural ("tomorrow", "next Friday") or YYYY-MM-DD.'
+          },
+          start_time: { type: 'string', description: 'Start time, e.g. "2pm" or "14:00".' },
+          duration_minutes: {
+            type: 'number',
+            description: 'Length in minutes. Defaults to 30.'
+          },
+          attendees: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Optional attendee email addresses.'
+          },
+          location: { type: 'string', description: 'Optional location or meeting link.' },
+          description: { type: 'string', description: 'Optional event description.' }
+        },
+        required: ['title', 'date', 'start_time'],
+        additionalProperties: false
+      },
+      run: async ({ title, date, start_time, duration_minutes, attendees, location, description }) => {
+        if (!title || !date || !start_time) {
+          return 'To propose a meeting I need at least a title, a date, and a start time.';
+        }
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+
+        let times;
+        try {
+          times = googleCalendarService.parseDateTime(date, start_time, duration_minutes || 30, tz);
+        } catch (e) {
+          return `I couldn't parse the date/time from "${date}" / "${start_time}". Ask the user to clarify (e.g. "tomorrow 2pm").`;
+        }
+
+        const attendeeList = Array.isArray(attendees)
+          ? attendees.filter(Boolean)
+          : (attendees ? String(attendees).split(',').map(s => s.trim()).filter(Boolean) : []);
+
+        const event = {
+          summary: title.trim(),
+          description: description ? String(description) : '',
+          startTime: times.startTime,
+          endTime: times.endTime,
+          attendees: attendeeList,
+          location: location ? String(location) : '',
+          meetingType: null,
+          timeZone: tz
+        };
+
+        dataStore.setThreadData(channel, thread_ts, {
+          pending_event: event,
+          pending_event_time: Date.now()
+        });
+
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel,
+          thread_ts,
+          text: `Here's the event to add — confirm below.`,
+          blocks: calendarHandler.buildEventPreviewBlocks(event, stableTs, tz)
+        });
+
+        return 'A calendar-event preview is now shown to the user with Create / Cancel buttons. Awaiting their confirmation — do not take further action.';
       }
     }
   ];
