@@ -6,6 +6,12 @@ scheduling links, time tracking, task management, calendar, and workouts. She no
 **reads the thread she's mentioned in** so she can answer questions about the
 conversation and turn its action items into Asana tasks.
 
+She's the assistant for a **one-person consulting business (IndieVisual)**, spanning work
+(calendar, meeting prep, project to-dos, email/contract drafting) and personal life (meals,
+restaurants, workouts). Because the business serves **multiple clients**, keeping their context
+strictly separate is a core requirement — see [`roadmap.md`](./roadmap.md) → Phase 2 for the
+memory & client-isolation design.
+
 - [Architecture](#architecture)
 - [What Donna can do](#what-donna-can-do)
 - [Thread context & task extraction](#thread-context--task-extraction)

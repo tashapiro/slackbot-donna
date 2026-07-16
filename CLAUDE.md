@@ -4,10 +4,18 @@ Guidance for Claude Code when working in this repo.
 
 ## What this is
 
-**Donna** — a Slack bot that acts as an all-in-one executive assistant (styled after Donna
-Paulsen from *Suits*). She turns natural-language Slack messages into actions across
-scheduling, time tracking, tasks, calendar, and workouts, and can read a thread's context to
-answer questions or create Asana tasks from it.
+**Donna** — a Slack bot that acts as the all-in-one executive assistant for a **one-person
+consulting business (IndieVisual)**, styled after Donna Paulsen from *Suits*. She turns
+natural-language Slack messages into actions across calendar, project to-dos, scheduling, time
+tracking, and workouts; reads a thread's context to answer questions or create Asana tasks; and
+is headed toward meeting prep, email/contract drafting, and personal-life help (meals, recipes,
+restaurants).
+
+**Client-context isolation is a hard requirement.** The business serves multiple clients, and
+Donna must never mix one client's context into another's — a confidentiality concern, not just
+a UX one. This is being designed into the memory layer (see `docs/roadmap.md` → Phase 2:
+scoped memory, per-message client resolution, storage-enforced isolation). Keep it in mind for
+any feature that reads or writes client data.
 
 Runtime: Node.js + [Slack Bolt](https://slack.dev/bolt-js). Entry point is `app.js`.
 
