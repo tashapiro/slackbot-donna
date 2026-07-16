@@ -158,11 +158,13 @@ to the workspace so the new scopes take effect.
 
 ```bash
 npm install
-cp .env.example .env   # if present; otherwise create .env with the vars below
+cp .env.example .env   # then fill in your values
 npm run dev            # starts app.js
 ```
 
-Key environment variables:
+**`.env.example` (repo root) is the authoritative list of every environment variable** — grouped
+by integration, marked `[required]` vs `[feature]`, with the Google/Peloton auth alternatives.
+Use it as the checklist for what to set in the Render dashboard. The most important ones:
 
 | Var | Purpose | Default |
 |-----|---------|---------|
@@ -200,10 +202,10 @@ Donna has two interchangeable brains for open-ended messages, selected by `BRAIN
 Donna is hosted on **[Render](https://render.com)** as a long-running Node service (started
 with `npm start` → `node app.js`). Practical notes:
 
-- **Environment variables live in the Render dashboard**, not in a committed `.env`. Any new
-  config must be added there to take effect in production. In particular, to turn on the
-  agentic Claude brain you must set `ANTHROPIC_API_KEY`, `BRAIN=agentic`, and (optionally)
-  `DONNA_MODEL` on the Render service.
+- **Environment variables live in the Render dashboard**, not in a committed `.env` — use
+  [`.env.example`](../.env.example) as the checklist of what to set there. Any new config must
+  be added on Render to take effect in production. In particular, to turn on the agentic Claude
+  brain you must set `ANTHROPIC_API_KEY`, `BRAIN=agentic`, and (optionally) `DONNA_MODEL`.
 - **Run mode must match the Render service type.** `app.js` supports Slack **Socket Mode**
   (`SOCKET_MODE=true`, an outbound WebSocket — fits a Render **Background Worker**, no public
   port needed) or **HTTP mode** (an Express receiver bound to `PORT`, which Render provides —

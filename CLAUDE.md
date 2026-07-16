@@ -56,9 +56,10 @@ node -c <file.js>      # syntax check (there is no real test suite yet)
 
 Donna is hosted on **Render** as a long-running Node service (`npm start`). Env vars are set
 in the **Render dashboard** (not a committed `.env`) — new config must be added there to take
-effect in production. In-memory `dataStore` is wiped on every deploy/restart. Run mode
-(`SOCKET_MODE`) must match the Render service type (Background Worker for socket mode, Web
-Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
+effect in production. **`.env.example` (repo root) is the full, documented list of env vars** —
+keep it updated when you add config. In-memory `dataStore` is wiped on every deploy/restart.
+Run mode (`SOCKET_MODE`) must match the Render service type (Background Worker for socket mode,
+Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
 
 ## Conventions & gotchas
 
