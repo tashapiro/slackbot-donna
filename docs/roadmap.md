@@ -200,17 +200,41 @@ is allowed — an explicit, read-only, clearly-labeled multi-client view. But cr
 context must never flow into an *outward* artifact (an email or doc to a client). Single-client
 is the default for anything she drafts or sends.
 
-### Persistence
-Must survive Render redeploys — a Render Disk or external store (not the container filesystem).
-The Claude memory tool (`/memories`) is a natural fit, with the **backend** enforcing which
-scope's files are visible per request (the isolation boundary lives in the backend, not the
-model's goodwill).
+### Persistence & database
+Memory must survive Render redeploys (the in-memory `dataStore` is wiped on every deploy/
+restart), so it lives in a real database — **Postgres**, behind a thin data-access module.
+
+**`services/memoryStore.js` is the only thing that touches the DB.** It exposes
+`remember({ scope, client, ... })` / `recall({ scope, client, ... })` and enforces the scope
+filter on **every** query. This is where the isolation guarantee actually lives — no caller can
+read across clients, because the filter isn't optional. The schema is tiny (the Google Sheet
+stays the client *registry*; the DB only holds scoped memory):
+
+```
+memories(id, scope, client_key, kind, content, created_at, updated_at)
+  scope ∈ 'personal' | 'business' | 'client'
+  every read: WHERE scope = ? AND (scope <> 'client' OR client_key = ?)
+```
+
+**Engine** — swappable behind the module (a connection-string choice, not an architecture one):
+- **Recommended: Neon** (serverless Postgres) — free, durable, standard Postgres; just a
+  connection string in Render env.
+- **Render Postgres** — if you'd rather keep everything on Render (use the small paid tier for
+  durability; Render's free Postgres has time-limited/expiring terms).
+- **SQLite on a Render Disk** (`better-sqlite3`) — fewest moving parts; same scope-filtered
+  schema, but needs a paid Render instance and pins the service to one node (fine for a solo
+  bot). Use only if you want zero external DB.
+
+We deliberately do **not** use the Claude memory-tool `/memories` file interface as the store —
+structured rows with a scope key are far easier to isolate and audit than files. (That
+model-facing interface could be layered on top later if useful.)
 
 ### Sub-steps
 - **2a — Client registry + resolver:** read the Google Sheet; a `resolveClient(message)` layer
   → active client or "ambiguous". Backbone for everything below.
-- **2b — Scoped memory:** personal / business-global / per-client namespaces, storage-enforced,
-  keyed by the registry's canonical client id, wired to 2a's confirm-when-unsure behavior.
+- **2b — Scoped memory:** personal / business-global / per-client namespaces via
+  `services/memoryStore.js` over Postgres, storage-enforced, keyed by the registry's canonical
+  client id, wired to 2a's confirm-when-unsure behavior.
 
 Downstream (meeting prep, contract drafting, per-client email) then inherits correct scoping.
 Even the current read tools (`list_tasks`, `check_calendar`) should become scope-filterable by
@@ -222,6 +246,10 @@ client — design new tool signatures with that in mind.
 - **The sheet:** share it with the bot's Google service-account email; agree the column layout
   above (especially `Client → Asana project`). If it's structured differently, the resolver is
   built around the actual columns.
+- **Database engine:** **Neon** (free/durable, recommended) vs Render Postgres (in-platform,
+  small paid) vs SQLite-on-disk (needs a paid Render instance). All sit behind the same
+  `memoryStore` module — a config choice, not an architecture one. (Also worth knowing: which
+  Render tier/service Donna runs on, since a Disk is paid-only and free web services spin down.)
 
 ## How we work through the phases
 
