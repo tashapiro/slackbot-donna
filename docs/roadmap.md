@@ -98,26 +98,33 @@ Each phase is independently shippable; after Phase 1 everything else is additive
 > **not** deleted in Phase 0 — removing them would leave the current bot broken. They're
 > replaced in Phase 1 when the agentic brain supplies real personality and email drafting.
 
-### Phase 1 — Agentic core (spike alongside the existing router)
+### Phase 1 — Agentic core (spike alongside the existing router) — in progress
 
-- [ ] Add `@anthropic-ai/sdk`; add `ANTHROPIC_API_KEY` and `DONNA_MODEL` (default
-      `claude-sonnet-5`) to config/env and README.
-- [ ] Write Donna's system prompt in one place (e.g. `utils/donnaPrompt.js`): personality
-      (sharp, warm, witty — no canned phrases) + operating rules (ask at most one clarifying
-      question; confirm before risky/irreversible actions; be concise).
-- [ ] Create a tools module (e.g. `utils/tools.js`) wrapping existing service methods as Tool
-      Runner tools. Start small: `list_tasks`, `create_task` (preview→confirm),
-      `check_calendar`, `create_meeting`, and thread → `extract_tasks`.
-- [ ] Add an agentic handler that runs `client.beta.messages.toolRunner(...)` with the thread
-      transcript (`utils/threadReader.js`) as context; keep **preview-then-confirm** for all
-      writes (Asana, calendar, later email).
-- [ ] Gate it behind a flag (e.g. `BRAIN=agentic`) so it runs alongside the current router for
-      A/B testing before any full migration.
-- [ ] Once the agentic path handles conversation + email drafting, retire the canned
-      personality arrays and `generateModernEmail`, and stop `handleGeneralChat` from
-      discarding the model's response.
-- [ ] Verify on real messages: thread summarize/Q&A, and a multi-step ask
-      ("summarize this call, add the action items to Asana, and block 30 min to review").
+Landed (the spike is wired and offline-verified; live run needs `ANTHROPIC_API_KEY`):
+
+- [x] Add `@anthropic-ai/sdk`; add `ANTHROPIC_API_KEY`, `DONNA_MODEL` (default
+      `claude-sonnet-5`), and `BRAIN` to config/env and README.
+- [x] Donna's system prompt in one place — `utils/donnaPrompt.js` (personality, no canned
+      phrases; ask ≤1 question; confirm before writes; concise Slack style).
+- [x] Tools module — `utils/donnaTools.js` wrapping existing services: `list_tasks`,
+      `list_projects`, `check_calendar` (read), and `propose_tasks` (write → reuses the
+      existing pending-task + Create/Cancel button flow; also covers "turn this call's action
+      items into tasks", since the model reads the thread transcript in context).
+- [x] Agentic handler — `utils/donnaBrain.js` runs `client.beta.messages.toolRunner(...)`
+      with the thread transcript as context; writes stay **preview-then-confirm**.
+- [x] Gated behind `BRAIN=agentic` in `app.js` (runs past the exact-command fast paths,
+      alongside the OpenAI router). Startup log reports the active brain.
+
+Still to do in Phase 1:
+
+- [ ] Add a `propose_meeting` write tool (calendar events) following the same
+      preview-then-confirm pattern — the mechanical next tool now that the pattern is proven.
+- [ ] Once the agentic path is the default, retire the canned personality arrays and
+      `generateModernEmail` in `app.js`, and stop `handleGeneralChat` discarding the model's
+      response.
+- [ ] **Live verification** (needs `ANTHROPIC_API_KEY` + Slack): thread summarize/Q&A, and a
+      multi-step ask ("summarize this call, add the action items to Asana, and block 30 min to
+      review"). Tune `DONNA_MODEL` / effort for latency vs. quality.
 
 ---
 

@@ -133,6 +133,7 @@ no `thread_ts` to read from, so extraction there will report it has nothing to r
 |---------|-------|----------|
 | Slack | Bolt app (socket or HTTP) | `SLACK_BOT_TOKEN`, `SLACK_SIGNING_SECRET`, `SLACK_APP_TOKEN` (socket) |
 | OpenAI | Intent routing + task extraction | `OPENAI_API_KEY`, `ROUTER_MODEL`, `EXTRACT_MODEL` |
+| Anthropic (Claude) | Agentic brain (`BRAIN=agentic`) | `ANTHROPIC_API_KEY`, `DONNA_MODEL` |
 | SavvyCal | Scheduling links | `SAVVYCAL_TOKEN` |
 | Toggl | Time tracking | (see `services/toggl.js`) |
 | Asana | Tasks & projects | `ASANA_API_TOKEN`, `ASANA_WORKSPACE_ID` |
@@ -167,11 +168,28 @@ Key environment variables:
 | `SOCKET_MODE` | `true` for Socket Mode, else HTTP | — |
 | `PORT` | HTTP port | `3000` |
 | `AGENT_MODE` | `true` to enable LLM intent routing | — |
-| `OPENAI_API_KEY` | OpenAI auth | — |
+| `BRAIN` | `agentic` → use the Claude Tool Runner brain; anything else → the OpenAI router | — |
+| `OPENAI_API_KEY` | OpenAI auth (router + task extraction) | — |
 | `ROUTER_MODEL` | Model for intent classification | `gpt-4o-mini` |
 | `EXTRACT_MODEL` | Model for action-item extraction | `gpt-4o` |
+| `ANTHROPIC_API_KEY` | Anthropic auth (agentic brain) | — |
+| `DONNA_MODEL` | Model for the agentic brain | `claude-sonnet-5` |
 | `ASANA_API_TOKEN` / `ASANA_WORKSPACE_ID` | Asana auth / workspace | — |
 | `SAVVYCAL_TOKEN` | SavvyCal auth | — |
+
+### The two brains
+
+Donna has two interchangeable brains for open-ended messages, selected by `BRAIN`:
+
+- **OpenAI intent router** (default) — `utils/intentClassifier.js` classifies each message into
+  one intent and `app.js` dispatches via a switch. Rigid, one action per message.
+- **Agentic (Claude)** — set `BRAIN=agentic` (needs `ANTHROPIC_API_KEY`). `utils/donnaBrain.js`
+  runs a [Tool Runner](https://docs.claude.com) loop on Claude (default Sonnet 5): a personality
+  system prompt (`utils/donnaPrompt.js`) plus tools that wrap the existing services
+  (`utils/donnaTools.js`). It converses naturally, chains multiple tools in one turn, and keeps
+  the preview-then-confirm flow for writes. This is the **Phase 1 spike** — see
+  [`roadmap.md`](./roadmap.md). It runs alongside the router (past the exact-command fast paths)
+  so you can A/B them; flip back by unsetting `BRAIN`.
 
 > `AGENT_MODE` must be `true` (and `OPENAI_API_KEY` set) for anything beyond the exact
 > `schedule "…" 30` command and simple greetings. Without it, Donna falls back to basics.

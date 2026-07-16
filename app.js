@@ -8,6 +8,7 @@ const dataStore = require('./utils/dataStore');
 const ErrorHandler = require('./utils/errorHandler');
 const TimezoneHelper = require('./utils/timezoneHelper');
 const { fetchThreadTranscript } = require('./utils/threadReader');
+const donnaBrain = require('./utils/donnaBrain');
 
 // Service imports
 const savvyCalService = require('./services/savvycal');
@@ -38,6 +39,9 @@ const SLACK_APP_TOKEN = process.env.SLACK_APP_TOKEN;
 const SAVVYCAL_TOKEN = (process.env.SAVVYCAL_TOKEN || '').trim();
 
 const AGENT_MODE = String(process.env.AGENT_MODE).toLowerCase() === 'true';
+// Which brain to use for open-ended messages: 'agentic' → Claude Tool Runner
+// (utils/donnaBrain.js); anything else → the existing OpenAI intent router.
+const BRAIN = String(process.env.BRAIN || '').toLowerCase();
 
 // Donna's own Slack user ID, resolved at startup. Used to label her own messages
 // when reading a thread transcript so she doesn't mistake them for the user's.
@@ -710,6 +714,22 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
     }
   }
 
+  // Agentic brain (Claude Tool Runner) — Phase 1 spike, gated behind BRAIN=agentic.
+  // Runs alongside the OpenAI router; when enabled it handles everything past the
+  // exact-command fast paths above.
+  if (BRAIN === 'agentic' && donnaBrain.isEnabled()) {
+    await donnaBrain.handleMessage({
+      text,
+      client,
+      channel,
+      thread_ts: responseThreadTs,
+      userId: user,
+      botUserId: BOT_USER_ID,
+      logger
+    });
+    return;
+  }
+
   // Let the LLM handle everything else with intelligent classification
 
   // Enhanced agentic path
@@ -937,6 +957,17 @@ setInterval(() => {
     console.log(`🪪 Donna's user ID: ${BOT_USER_ID}`);
   } catch (error) {
     console.warn('⚠️ Could not resolve bot user ID:', error.message);
+  }
+
+  // Report which brain is handling open-ended messages
+  if (BRAIN === 'agentic') {
+    if (donnaBrain.isEnabled()) {
+      console.log(`🧠 Brain: agentic (Claude Tool Runner, model ${donnaBrain.MODEL})`);
+    } else {
+      console.warn('⚠️ BRAIN=agentic but the agentic brain is not ready (missing ANTHROPIC_API_KEY or SDK) — falling back to the OpenAI router.');
+    }
+  } else {
+    console.log('🧠 Brain: OpenAI intent router (set BRAIN=agentic to use the Claude Tool Runner)');
   }
   console.log('💼 Managing: Scheduling, Time Tracking, Task Management, Calendar & Your Entire Professional Life');
   console.log('🌍 Now with timezone-aware calendar support - respecting every user\'s local time');
