@@ -4,8 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/check-syntax.js",
+    "test": "node scripts/check-syntax.js && node scripts/check-phase2.js",
     "check": "node scripts/check-syntax.js",
+    "check:phase2": "node scripts/check-phase2.js",
     "start": "node app.js",
     "dev": "node app.js"
   },
@@ -18,6 +19,7 @@
     "axios": "^1.11.0",
     "dotenv": "^17.2.1",
     "googleapis": "^155.0.1",
-    "openai": "^5.12.2"
+    "openai": "^5.12.2",
+    "pg": "^8.22.0"
   }
 }

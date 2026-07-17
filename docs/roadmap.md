@@ -242,16 +242,51 @@ Downstream (meeting prep, contract drafting, per-client email) then inherits cor
 Even the current read tools (`list_tasks`, `check_calendar`) should become scope-filterable by
 client — design new tool signatures with that in mind.
 
-### Open items to confirm (recommended defaults in **bold**)
-- **Ambiguity behavior:** **detect + show the client + confirm-when-unsure** (vs. silent
-  best-guess, or a manual "active client" mode). Explicit tags always override.
-- **The sheet:** share it with the bot's Google service-account email; agree the column layout
-  above (especially `Client → Asana project`). If it's structured differently, the resolver is
-  built around the actual columns.
-- **Database engine:** **Neon** (free/durable, recommended) vs Render Postgres (in-platform,
-  small paid) vs SQLite-on-disk (needs a paid Render instance). All sit behind the same
-  `memoryStore` module — a config choice, not an architecture one. (Also worth knowing: which
-  Render tier/service Donna runs on, since a Disk is paid-only and free web services spin down.)
+### Landed (this branch: `claude/phase-2-implementation-hw1tvz`)
+
+Both sub-steps built, additive and defensively gated (no config → feature reports "not
+configured", the bot runs exactly as before). Offline-verified (`npm run check:phase2`); the live
+end-to-end check needs Postgres + a shared sheet (see below), like the Phase 1 `ANTHROPIC_API_KEY`
+step.
+
+- [x] **2a — Registry + resolver.** `services/googleSheets.js` (read-only Sheets, reuses the
+      Calendar service account via the new `utils/googleAuth.js`; no new package —
+      `googleapis` already present); `services/clientRegistry.js` — built for the real
+      **IndieVisual Hub** schema: reads the `Clients` tab, keys clients by the sheet's stable
+      `id` (CLI-xxx), **auto-derives nicknames** (strips corporate suffixes, since there's no
+      aliases column) and honors an explicit `aliases` column if added, collects **email domains**
+      from `website`/`email` + the `Contacts` tab (free-mail ignored), skips soft-deleted rows;
+      headers auto-detected with `CLIENT_REGISTRY_COL_*` overrides; 5-min cached.
+      `utils/clientResolver.js` (pure, injected registry: confident / ambiguous / none, explicit
+      "for <Client>" override wins, transcript fallback). Asana auto-routing (Projects tab's
+      `asana_project_id`) deferred.
+- [x] **2b — Scoped memory.** `services/memoryStore.js` — **the only module that touches the DB**
+      — over **Render Postgres** (`pg` + `DATABASE_URL`). The scope filter
+      `WHERE scope = $1 AND (scope <> 'client' OR client_key = $2)` is applied on every read and is
+      not optional; the visible-context read returns `personal + business + <active client>` only.
+- [x] **Brain wiring (backbone + surface tag).** `donnaBrain` resolves the client, preloads visible
+      memory, injects client/memory context, and prefixes confident replies with `📁 <Client>`;
+      two tools (`remember`, `recall`) whose client namespace comes from the resolved context, never
+      the model; prompt gains a Client-context-&-memory section (scopes, confirm-when-unsure, the
+      inbound-aggregation-OK / outbound-single-client confidentiality rule). `list_tasks` /
+      `check_calendar` signatures left as-is (scope-filtering deferred to a later phase, by design).
+
+**Live checklist (on Render):** set `DATABASE_URL` + `CLIENT_REGISTRY_SHEET_ID`, share the sheet
+with the service-account email, then confirm: a client-named message shows `📁 <Client>`; an
+ambiguous message asks "which client?"; "remember that Acme prefers Friday check-ins" survives a
+restart; recall never returns another client's rows.
+
+### Decisions (confirmed for this build)
+- **Ambiguity behavior:** detect + show the client (`📁`) + confirm-when-unsure. Explicit
+  "for <Client>" overrides always win. _(Implemented in `utils/clientResolver.js` + the brain.)_
+- **The sheet:** the real layout **differs** from the suggested columns, so the reader is
+  **config-driven** — headers auto-detected with `CLIENT_REGISTRY_COL_*` env overrides, rather than
+  hard-coded columns. Still to plug in at deploy: the **Sheet ID** (`CLIENT_REGISTRY_SHEET_ID`) and
+  sharing the sheet with the service-account email. `Client → Asana project` auto-routing is left
+  for a later phase (read/propose tool signatures unchanged for now).
+- **Database engine:** **Render Postgres** (`pg` + `DATABASE_URL`), keeping everything in-platform.
+  Swappable behind `memoryStore` (a connection-string choice). Use the small paid tier for
+  durability.
 
 ## How we work through the phases
 
