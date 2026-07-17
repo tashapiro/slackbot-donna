@@ -140,12 +140,18 @@ This is **Phase 2** (see [`roadmap.md`](./roadmap.md)). It gives the agentic bra
 (`BRAIN=agentic`) two things it lacked: a persistent memory that survives Render restarts, and an
 awareness of **which client** each message is about — with the clients kept strictly separate.
 
-**Client registry (from your Google Sheet).** The source of truth for clients is a Google Sheet
-you maintain. Donna reads it with the **same Google service account** as Calendar — share the sheet
-with the service-account email (read access) and set `CLIENT_REGISTRY_SHEET_ID`. Columns are
-**auto-detected from the header row** (client name, aliases, Asana project, email domain, status),
-so your layout doesn't have to match any fixed template; override any header with
-`CLIENT_REGISTRY_COL_*` if detection misses it. The registry is cached ~5 minutes.
+**Client registry (from your Google Sheet).** The source of truth for clients is your Google Sheet
+(the "IndieVisual Hub"). Donna reads its **`Clients`** tab with the **same Google service account**
+as Calendar — share the sheet with the service-account email (Viewer) and set
+`CLIENT_REGISTRY_SHEET_ID`. Each client is keyed by the sheet's own stable `id` (`CLI-xxx`), so
+renaming a client doesn't orphan its memory. Because there's no aliases column and names are formal
+("Lockton Companies LLC"), Donna **auto-derives nicknames** by stripping corporate suffixes
+("Lockton") — add an `aliases` column if you want explicit control. For detection she also collects
+**email domains** from each client's `website`/`email` and from the **`Contacts`** tab (so a message
+mentioning `@lockton.com` resolves to Lockton); free-mail domains are ignored. Column headers are
+auto-detected and overridable via `CLIENT_REGISTRY_COL_*`; the registry is cached ~5 minutes.
+(The `Projects` tab holds each project's `asana_project_id` — auto-filing tasks into a client's
+Asana project is wired in a later phase.)
 
 **Per-message client resolution.** Because a channel isn't one-client-per-channel (a shared
 `call-notes` channel holds Fireflies notes across clients), Donna resolves the client **per

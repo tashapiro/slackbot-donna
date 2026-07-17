@@ -23,13 +23,17 @@ function mentions(haystackLower, term) {
   return re.test(haystackLower);
 }
 
-/** Does this client appear in the haystack (name, any alias, or email domain)? */
+/** Does this client appear in the haystack (name, any alias, or an email domain)? */
 function clientMentioned(haystackLower, client) {
   if (mentions(haystackLower, client.name)) return true;
   for (const a of client.aliases || []) {
     if (mentions(haystackLower, a)) return true;
   }
-  if (client.emailDomain && haystackLower.includes(client.emailDomain.toLowerCase())) return true;
+  // emailDomains is the current shape; emailDomain (string) kept for backward compatibility.
+  const domains = client.emailDomains || (client.emailDomain ? [client.emailDomain] : []);
+  for (const d of domains) {
+    if (d && haystackLower.includes(String(d).toLowerCase())) return true;
+  }
   return false;
 }
 

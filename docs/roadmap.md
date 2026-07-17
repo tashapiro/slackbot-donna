@@ -251,10 +251,15 @@ step.
 
 - [x] **2a — Registry + resolver.** `services/googleSheets.js` (read-only Sheets, reuses the
       Calendar service account via the new `utils/googleAuth.js`; no new package —
-      `googleapis` already present); `services/clientRegistry.js` (**config-driven column mapping**
-      — headers auto-detected, `CLIENT_REGISTRY_COL_*` overrides — because the real sheet differs
-      from the suggested layout; 5-min cached); `utils/clientResolver.js` (pure, injected registry:
-      confident / ambiguous / none, explicit "for <Client>" override wins, transcript fallback).
+      `googleapis` already present); `services/clientRegistry.js` — built for the real
+      **IndieVisual Hub** schema: reads the `Clients` tab, keys clients by the sheet's stable
+      `id` (CLI-xxx), **auto-derives nicknames** (strips corporate suffixes, since there's no
+      aliases column) and honors an explicit `aliases` column if added, collects **email domains**
+      from `website`/`email` + the `Contacts` tab (free-mail ignored), skips soft-deleted rows;
+      headers auto-detected with `CLIENT_REGISTRY_COL_*` overrides; 5-min cached.
+      `utils/clientResolver.js` (pure, injected registry: confident / ambiguous / none, explicit
+      "for <Client>" override wins, transcript fallback). Asana auto-routing (Projects tab's
+      `asana_project_id`) deferred.
 - [x] **2b — Scoped memory.** `services/memoryStore.js` — **the only module that touches the DB**
       — over **Render Postgres** (`pg` + `DATABASE_URL`). The scope filter
       `WHERE scope = $1 AND (scope <> 'client' OR client_key = $2)` is applied on every read and is
