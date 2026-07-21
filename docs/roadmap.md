@@ -140,6 +140,17 @@ Still to do in Phase 1:
 - [x] **Live verification** — thread reading, extraction, and the agentic brain confirmed
       working in production (`BRAIN=agentic`, Sonnet 5). Ongoing: tune `DONNA_MODEL` / effort
       for latency vs. quality as you use it.
+- [x] **SavvyCal tools** (branch `claude/savvycal-scheduling-links-x9ynlj`) — the agentic brain
+      had **no** scheduling tools, so SavvyCal was effectively lost under `BRAIN=agentic` (only
+      the exact `schedule "…" 30` fast path survived). Added 10 tools in `utils/donnaTools.js`:
+      booking links (`create_scheduling_link` — single-use default, reusable on request; list /
+      get / disable / delete), booked events (`list_booked_events`), and meeting polls
+      (`create_scheduling_poll` with calendar-suggested or user-named slots; list / get-with-votes
+      / delete). Creating a link is direct; disable/delete/poll-send go through the existing
+      Confirm/Cancel card pattern (`handlers/scheduling.js` + `sc_action_*`/`sc_poll_*` in
+      `app.js`). Offline check: `npm run check:savvycal`. **Live-verify on Render** (SavvyCal API
+      is unreachable from sandboxes): reusable-link payload + the `/v1/events` and `/v1/polls`
+      endpoints were built defensively and need the production-token pass in docs/README.md.
 - [ ] **Deferred until agentic becomes the default** (a separate milestone — the OpenAI router
       is still the default and fallback, and this code is load-bearing for it): retire the
       canned personality arrays and `generateModernEmail` in `app.js`, and stop

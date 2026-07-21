@@ -6,10 +6,12 @@
 
 const asanaService = require('../services/asana');
 const googleCalendarService = require('../services/googleCalendar');
+const savvyCalService = require('../services/savvycal');
 const memoryStore = require('../services/memoryStore');
 const TimezoneHelper = require('./timezoneHelper');
 const projectHandler = require('../handlers/projects');
 const calendarHandler = require('../handlers/calendar');
+const schedulingHandler = require('../handlers/scheduling');
 const dataStore = require('./dataStore');
 
 /**
@@ -282,6 +284,316 @@ function buildTools({ client, channel, thread_ts, userId, activeClient = null, c
         });
 
         return 'A calendar-event preview is now shown to the user with Create / Cancel buttons. Awaiting their confirmation — do not take further action.';
+      }
+    },
+
+    // ── SavvyCal: scheduling links, booked events, and meeting polls ──────────
+    {
+      name: 'create_scheduling_link',
+      description:
+        'Create a SavvyCal scheduling link the user can share so someone books time on their ' +
+        'calendar. Creates it immediately (no confirmation needed — it is cheap and reversible) ' +
+        'and returns the URL for you to give the user. Default is a single-use link (expires ' +
+        'after one booking); set reusable:true for a standing link that can be booked repeatedly.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Name of the link / meeting, e.g. "Intro call".' },
+          minutes: { type: 'number', description: 'Meeting length in minutes (e.g. 15, 30, 45, 60).' },
+          reusable: {
+            type: 'boolean',
+            description: 'true for a standing reusable link; false/omitted for single-use (default).'
+          }
+        },
+        required: ['title', 'minutes'],
+        additionalProperties: false
+      },
+      run: async ({ title, minutes, reusable }) => {
+        if (!title || !minutes) return 'To create a link I need a title and a duration in minutes.';
+        const dur = savvyCalService.validateDuration(minutes);
+        const name = savvyCalService.generateLinkTitle(title, dur);
+        const { url, id } = reusable
+          ? await savvyCalService.createReusableLink(name, dur)
+          : await savvyCalService.createSingleUseLink(name, dur);
+        dataStore.setThreadData(channel, thread_ts, {
+          last_link_id: id,
+          last_link_url: url,
+          last_link_title: name,
+          last_link_duration: dur,
+          last_action: 'created_scheduling_link',
+          last_action_time: Date.now()
+        });
+        return `Created a ${reusable ? 'reusable' : 'single-use'} ${dur}-min link "${name}": ${url}\n` +
+          'Give this URL to the user.';
+      }
+    },
+
+    {
+      name: 'list_scheduling_links',
+      description: "List the user's SavvyCal scheduling links (name, URL, and whether each is active).",
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      run: async () => {
+        const links = await savvyCalService.getLinks();
+        if (!links.length) return 'No SavvyCal scheduling links found.';
+        const lines = links.slice(0, 15).map(l => {
+          const url = savvyCalService.buildUrlFrom(l);
+          const state = l.enabled === false ? '🔴 disabled' : '🟢 active';
+          return `- ${state} "${l.name}" — ${url} (id: ${l.id})`;
+        });
+        const more = links.length > 15 ? `\n(+${links.length - 15} more)` : '';
+        return `Scheduling links (${links.length}):\n${lines.join('\n')}${more}`;
+      }
+    },
+
+    {
+      name: 'get_scheduling_link',
+      description:
+        'Get details for one SavvyCal link (status, URL, durations). If no link_id is given, ' +
+        'uses the most recent link created in this conversation.',
+      inputSchema: {
+        type: 'object',
+        properties: { link_id: { type: 'string', description: 'The link id. Optional — defaults to the last one in this thread.' } },
+        additionalProperties: false
+      },
+      run: async ({ link_id }) => {
+        let id = link_id;
+        if (!id) id = dataStore.getThreadData(channel, thread_ts).last_link_id;
+        if (!id) return "I don't have a link id, and there's no recent link in this conversation. Ask the user which link.";
+        const link = await savvyCalService.getLink(id);
+        const url = savvyCalService.buildUrlFrom(link);
+        const state = link.enabled === false ? 'disabled' : 'active';
+        const durs = link.durations && link.durations.length ? ` · durations: ${link.durations.join(', ')} min` : '';
+        return `Link "${link.name}" (${state}) — ${url}${durs} (id: ${link.id})`;
+      }
+    },
+
+    {
+      name: 'disable_scheduling_link',
+      description:
+        'Disable (deactivate) a SavvyCal link so it stops taking new bookings. This shows the ' +
+        'user a Disable/Cancel confirmation card first — it does NOT disable immediately. After ' +
+        'calling it, tell the user to confirm; do not claim the link is disabled yet. If no ' +
+        'link_id is given, the most recent link in this conversation is used.',
+      inputSchema: {
+        type: 'object',
+        properties: { link_id: { type: 'string', description: 'The link id. Optional — defaults to the last one in this thread.' } },
+        additionalProperties: false
+      },
+      run: async ({ link_id }) => {
+        let id = link_id;
+        if (!id) id = dataStore.getThreadData(channel, thread_ts).last_link_id;
+        if (!id) return "I don't have a link id, and there's no recent link here. Ask the user which link to disable.";
+        let name = null;
+        try { name = (await savvyCalService.getLink(id)).name; } catch { /* name is best-effort */ }
+        const pending = { kind: 'disable_link', id, name };
+        dataStore.setThreadData(channel, thread_ts, { pending_sc_action: pending });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Disable ${name ? `"${name}"` : 'that link'}?`,
+          blocks: schedulingHandler.buildScActionConfirmBlocks(pending, stableTs)
+        });
+        return 'A Disable/Cancel confirmation card is now shown to the user. Wait for them to confirm — do not claim it is disabled yet.';
+      }
+    },
+
+    {
+      name: 'delete_scheduling_link',
+      description:
+        'Permanently delete a SavvyCal link. This shows the user a Delete/Cancel confirmation ' +
+        'card first — it does NOT delete immediately. After calling it, tell the user to confirm; ' +
+        'do not claim the link is deleted yet. If no link_id is given, the most recent link in ' +
+        'this conversation is used.',
+      inputSchema: {
+        type: 'object',
+        properties: { link_id: { type: 'string', description: 'The link id. Optional — defaults to the last one in this thread.' } },
+        additionalProperties: false
+      },
+      run: async ({ link_id }) => {
+        let id = link_id;
+        if (!id) id = dataStore.getThreadData(channel, thread_ts).last_link_id;
+        if (!id) return "I don't have a link id, and there's no recent link here. Ask the user which link to delete.";
+        let name = null;
+        try { name = (await savvyCalService.getLink(id)).name; } catch { /* name is best-effort */ }
+        const pending = { kind: 'delete_link', id, name };
+        dataStore.setThreadData(channel, thread_ts, { pending_sc_action: pending });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Delete ${name ? `"${name}"` : 'that link'}?`,
+          blocks: schedulingHandler.buildScActionConfirmBlocks(pending, stableTs)
+        });
+        return 'A Delete/Cancel confirmation card is now shown to the user. Wait for them to confirm — do not claim it is deleted yet.';
+      }
+    },
+
+    {
+      name: 'list_booked_events',
+      description:
+        'List meetings that have actually been booked through SavvyCal (upcoming appointments). ' +
+        'Use this to answer "what\'s on the books" / "who booked time with me".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          from: { type: 'string', description: 'Optional start of the window (ISO 8601 or YYYY-MM-DD).' },
+          to: { type: 'string', description: 'Optional end of the window (ISO 8601 or YYYY-MM-DD).' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ from, to }) => {
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const events = await savvyCalService.getEvents({ from, to });
+        if (!events.length) return 'No booked SavvyCal events found for that window.';
+        const lines = events.slice(0, 20).map(e => {
+          const startRaw = e.start_at || e.start || (e.times && e.times[0] && e.times[0].start_at);
+          let when = startRaw || '(time unknown)';
+          if (startRaw) {
+            const d = new Date(startRaw);
+            if (!isNaN(d.getTime())) {
+              when = d.toLocaleString('en-US', {
+                weekday: 'short', month: 'short', day: 'numeric',
+                hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz
+              });
+            }
+          }
+          const invitee = e.attendee_name || e.invitee_name ||
+            (e.attendee && (e.attendee.display_name || e.attendee.name || e.attendee.email)) || '';
+          const title = e.summary || e.name || e.title || 'Meeting';
+          const cancelled = e.state === 'canceled' || e.state === 'cancelled' || e.cancelled_at ? ' (canceled)' : '';
+          return `- ${when} — ${title}${invitee ? ` with ${invitee}` : ''}${cancelled}`;
+        });
+        const more = events.length > 20 ? `\n(+${events.length - 20} more)` : '';
+        return `Booked events (${events.length}):\n${lines.join('\n')}${more}`;
+      }
+    },
+
+    {
+      name: 'create_scheduling_poll',
+      description:
+        'Create a SavvyCal meeting poll: propose a few specific time slots that a group votes on. ' +
+        'Use this when the user wants to find a time that works across several people. You can ' +
+        'recommend the slots yourself (check the calendar for open windows first) or use ones the ' +
+        'user names. This shows the user a preview card with Send/Cancel — it does NOT send ' +
+        'immediately. After calling it, tell the user to confirm; do not claim the poll is sent yet.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', description: 'Poll title, e.g. "Acme kickoff".' },
+          duration_minutes: { type: 'number', description: 'Meeting length in minutes for the chosen slot. Defaults to 30.' },
+          slots: {
+            type: 'array',
+            description: 'The proposed start times as ISO 8601 datetimes (e.g. "2026-07-23T14:00:00"). Provide 3–4.',
+            items: { type: 'string' }
+          },
+          attendees: {
+            type: 'array',
+            description: 'Optional participant email addresses to invite to the poll.',
+            items: { type: 'string' }
+          }
+        },
+        required: ['name', 'slots'],
+        additionalProperties: false
+      },
+      run: async ({ name, duration_minutes, slots, attendees }) => {
+        if (!name || !name.trim()) return 'A poll needs a name.';
+        const rawSlots = Array.isArray(slots) ? slots : [];
+        const normSlots = rawSlots
+          .map(s => (typeof s === 'string' ? s : (s && (s.start_at || s.start))))
+          .filter(Boolean)
+          .filter(s => !isNaN(new Date(s).getTime()))
+          .map(s => ({ start_at: s }));
+        if (!normSlots.length) return 'I need at least one valid time slot (ISO 8601) to build a poll.';
+
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const pending = {
+          name: name.trim(),
+          durationMinutes: parseInt(duration_minutes, 10) || 30,
+          slots: normSlots,
+          attendees: Array.isArray(attendees) ? attendees.filter(Boolean) : []
+        };
+        dataStore.setThreadData(channel, thread_ts, { pending_sc_poll: pending });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Here's the poll "${pending.name}" — confirm below.`,
+          blocks: schedulingHandler.buildPollPreviewBlocks(pending, stableTs, tz)
+        });
+        return `A poll preview (${normSlots.length} slots${pending.attendees.length ? `, ${pending.attendees.length} invitees` : ''}) is now shown with Send/Cancel. Wait for the user to confirm — do not claim it is sent yet.`;
+      }
+    },
+
+    {
+      name: 'list_scheduling_polls',
+      description: "List the user's SavvyCal meeting polls (name, status, and URL).",
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      run: async () => {
+        const polls = await savvyCalService.getPolls();
+        if (!polls.length) return 'No SavvyCal meeting polls found.';
+        const lines = polls.slice(0, 15).map(p => {
+          const url = p.url || (p.slug ? `https://savvycal.com/indievisual/${p.slug}` : '');
+          return `- "${p.name}"${p.state ? ` [${p.state}]` : ''}${url ? ` — ${url}` : ''} (id: ${p.id})`;
+        });
+        const more = polls.length > 15 ? `\n(+${polls.length - 15} more)` : '';
+        return `Meeting polls (${polls.length}):\n${lines.join('\n')}${more}`;
+      }
+    },
+
+    {
+      name: 'get_scheduling_poll',
+      description:
+        'Get one meeting poll with its slots and current vote counts — use to see which time is ' +
+        'winning. If no poll_id is given, uses the most recent poll from this conversation.',
+      inputSchema: {
+        type: 'object',
+        properties: { poll_id: { type: 'string', description: 'The poll id. Optional — defaults to the last poll in this thread.' } },
+        additionalProperties: false
+      },
+      run: async ({ poll_id }) => {
+        let id = poll_id;
+        if (!id) id = dataStore.getThreadData(channel, thread_ts).last_poll_id;
+        if (!id) return "I don't have a poll id, and there's no recent poll here. Ask the user which poll.";
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const poll = await savvyCalService.getPoll(id);
+        const slots = poll.slots || [];
+        const slotLines = slots.map(s => {
+          const d = new Date(s.start_at || s.start);
+          const when = isNaN(d.getTime())
+            ? String(s.start_at || s.start)
+            : d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz });
+          const votes = typeof s.votes === 'number' ? s.votes : (Array.isArray(s.votes) ? s.votes.length : 0);
+          return `  • ${when} — ${votes} vote${votes === 1 ? '' : 's'}`;
+        });
+        const url = poll.url ? `\n${poll.url}` : '';
+        return `Poll "${poll.name}"${poll.state ? ` [${poll.state}]` : ''}:${url}\n${slotLines.join('\n') || '  (no slots)'}`;
+      }
+    },
+
+    {
+      name: 'delete_scheduling_poll',
+      description:
+        'Delete a SavvyCal meeting poll. Shows the user a Delete/Cancel confirmation card first — ' +
+        'it does NOT delete immediately. After calling it, tell the user to confirm; do not claim ' +
+        'the poll is deleted yet. If no poll_id is given, the most recent poll here is used.',
+      inputSchema: {
+        type: 'object',
+        properties: { poll_id: { type: 'string', description: 'The poll id. Optional — defaults to the last poll in this thread.' } },
+        additionalProperties: false
+      },
+      run: async ({ poll_id }) => {
+        let id = poll_id;
+        if (!id) id = dataStore.getThreadData(channel, thread_ts).last_poll_id;
+        if (!id) return "I don't have a poll id, and there's no recent poll here. Ask the user which poll to delete.";
+        let name = null;
+        try { name = (await savvyCalService.getPoll(id)).name; } catch { /* name is best-effort */ }
+        const pending = { kind: 'delete_poll', id, name };
+        dataStore.setThreadData(channel, thread_ts, { pending_sc_action: pending });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Delete the poll ${name ? `"${name}"` : ''}?`,
+          blocks: schedulingHandler.buildScActionConfirmBlocks(pending, stableTs)
+        });
+        return 'A Delete/Cancel confirmation card is now shown to the user. Wait for them to confirm — do not claim it is deleted yet.';
       }
     },
 
