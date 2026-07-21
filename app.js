@@ -931,6 +931,40 @@ app.action('sc_details', async ({ ack, body, client }) => {
   }
 });
 
+// Agentic SavvyCal confirm flows (utils/donnaTools.js stages the pending action;
+// these buttons execute it). The button value carries the stable thread_ts.
+app.action('sc_action_confirm', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await schedulingHandler.confirmPendingScAction({ client, channel, thread_ts });
+});
+
+app.action('sc_action_cancel', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await schedulingHandler.cancelPendingScAction({ client, channel, thread_ts });
+});
+
+app.action('sc_poll_send', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await schedulingHandler.confirmPendingScPoll({ client, channel, thread_ts });
+});
+
+app.action('sc_poll_cancel', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await schedulingHandler.cancelPendingScPoll({ client, channel, thread_ts });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Event handlers - UPDATED to pass userId
 // ─────────────────────────────────────────────────────────────────────────────

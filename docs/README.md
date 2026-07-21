@@ -65,6 +65,7 @@ handlers/*.js  →  services/*.js  →  external API
 |------|-----------------|--------|
 | Scheduling (SavvyCal) | `schedule "Intro with Acme" 30` | `schedule_oneoff` |
 | | "list my links", "disable that link" | `list_links`, `disable_link` |
+| | "make a reusable 30-min booking link", "what's been booked?", "set up a poll with 3 times for the Acme kickoff" | agentic SavvyCal tools (see below) |
 | Time tracking (Toggl) | "log 2 hours to Client X yesterday" | `log_time` |
 | | "how much time did I track this week?" | `query_time` |
 | Tasks (Asana) | "what are my tasks this week?" | `list_tasks` |
@@ -260,6 +261,37 @@ Donna has two interchangeable brains for open-ended messages, selected by `BRAIN
 > `AGENT_MODE` must be `true` (and `OPENAI_API_KEY` set) for anything beyond the exact
 > `schedule "…" 30` command and simple greetings. Without it, Donna falls back to basics.
 
+### Scheduling with SavvyCal (agentic brain)
+
+The agentic brain has full SavvyCal tooling in `utils/donnaTools.js` (the OpenAI router only
+had create/list/disable/delete via the switch; the agentic brain previously had **none** — this
+restores and extends it). All of it runs under `BRAIN=agentic` and needs `SAVVYCAL_TOKEN`.
+
+- **Booking links** — `create_scheduling_link` (single-use by default; `reusable:true` for a
+  standing link), `list_scheduling_links`, `get_scheduling_link`, `disable_scheduling_link`,
+  `delete_scheduling_link`.
+- **Booked events** — `list_booked_events` ("what's on the books / who booked time with me").
+- **Meeting polls** — `create_scheduling_poll` (propose a few slots for a group to vote on;
+  Donna can suggest slots from your calendar or use ones you name), `list_scheduling_polls`,
+  `get_scheduling_poll` (shows live vote counts), `delete_scheduling_poll`.
+
+**Confirmation model:** creating a booking link is **immediate** (cheap and reversible) — Donna
+just shares the URL. Disabling/deleting a link, deleting a poll, and **sending a poll** all go
+through a Confirm/Cancel card first (same preview-then-confirm pattern as tasks/events), wired in
+`handlers/scheduling.js` + the `sc_action_*` / `sc_poll_*` button handlers in `app.js`.
+
+> **Two pieces need a live check on Render** (SavvyCal's API isn't reachable from CI/dev
+> sandboxes, so they were built defensively — graceful errors + raw-response logging — but not
+> exercised end-to-end): **(a)** reusable-link creation (the exact create payload vs single-use),
+> and **(b)** the `/v1/events` and `/v1/polls` endpoints (paths/response shapes). Offline logic is
+> covered by `npm run check:savvycal`.
+
+**Live verification (on Render, with `SAVVYCAL_TOKEN` set):** create a single-use link, create a
+reusable link (confirm it books more than once), list/get/disable/delete a link, `list_booked_events`
+returns real bookings, then create a poll with 3–4 slots + a couple of invitees → confirm it sends
+and `get_scheduling_poll` reflects votes. If a call errors, the logged raw response shows the exact
+path/shape to adjust.
+
 ## Deployment
 
 Donna is hosted on **[Render](https://render.com)** as a long-running Node service (started
@@ -286,7 +318,7 @@ with `npm start` → `node app.js`). Practical notes:
 ```
 app.js                     Slack wiring, message routing, brain selection, buttons
 handlers/
-  scheduling.js            SavvyCal link intents
+  scheduling.js            SavvyCal links, polls, booked events (+ agentic confirm flows)
   timeTracking.js          Toggl intents
   projects.js              Asana intents + thread task extraction (+ shared preview/confirm)
   calendar.js              Google Calendar intents + daily rundown
@@ -300,7 +332,7 @@ utils/
   intentClassifier.js      OpenAI router brain: LLM intent + slot extraction
   donnaBrain.js            Agentic (Claude) brain: Tool Runner loop  [BRAIN=agentic]
   donnaPrompt.js           Donna's personality + operating rules (system prompt)
-  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + remember/recall)
+  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + SavvyCal + remember/recall)
   clientResolver.js        Resolve the active client per message (confident/ambiguous/none)
   googleAuth.js            Shared Google service-account credential parsing
   taskExtractor.js         LLM action-item extraction (thread → tasks, router path)

@@ -98,5 +98,6 @@ Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
   to-dos, and this file when conventions change.
 - Commit with clear messages; push with `git push -u origin <branch>`.
 - Don't open a PR or push to `main` without explicit permission.
-- Current working branch: `claude/phase-2-implementation-hw1tvz` (Phase 2 — scoped memory +
-  client registry/resolver). Update this line when a new phase branch starts.
+- Current working branch: `claude/savvycal-scheduling-links-x9ynlj` (restore + extend SavvyCal
+  in the agentic brain: booking links, booked events, meeting polls — as tools in
+  `utils/donnaTools.js`, not the old router). Update this line when a new phase branch starts.

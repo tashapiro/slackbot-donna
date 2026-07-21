@@ -274,6 +274,146 @@ class SchedulingHandler {
     }
   }
 
+  // ── Agentic confirm flows (used by the Claude Tool Runner brain) ─────────────
+  // Creating a link is direct; disabling/deleting a link or poll, and sending a
+  // poll, go through a Confirm/Cancel card. The tool stages the pending action in
+  // dataStore and posts one of the cards below; the matching app.action handler
+  // calls the confirm method here.
+
+  // Confirm card for a guarded link/poll action (disable link, delete link,
+  // delete poll). `pending` = { kind, id, name }.
+  buildScActionConfirmBlocks(pending, stableTs) {
+    const what = pending.kind === 'delete_poll' ? 'poll' : 'link';
+    const verb = pending.kind === 'disable_link' ? 'Disable' : 'Delete';
+    const name = pending.name ? `*${pending.name}*` : `this ${what}`;
+    const consequence = pending.kind === 'disable_link'
+      ? 'It stops taking new bookings — you can re-enable it anytime.'
+      : "This can't be undone.";
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text: `${verb} ${name}? ${consequence}` } },
+      {
+        type: 'actions',
+        elements: [
+          { type: 'button', text: { type: 'plain_text', text: verb }, style: 'danger', action_id: 'sc_action_confirm', value: stableTs },
+          { type: 'button', text: { type: 'plain_text', text: 'Cancel' }, action_id: 'sc_action_cancel', value: stableTs }
+        ]
+      }
+    ];
+  }
+
+  // Execute the staged link/poll action (triggered by the Confirm button).
+  async confirmPendingScAction({ client, channel, thread_ts }) {
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    const pending = threadData.pending_sc_action;
+    if (!pending) {
+      return await client.chat.postMessage({
+        channel, thread_ts, text: 'That already cleared out — nothing pending to confirm.'
+      });
+    }
+    try {
+      let text;
+      if (pending.kind === 'disable_link') {
+        await savvyCalService.toggleLink(pending.id);
+        text = `✅ Disabled ${pending.name ? `*${pending.name}*` : 'that link'}. Toggle it back whenever.`;
+      } else if (pending.kind === 'delete_link') {
+        await savvyCalService.deleteLink(pending.id);
+        text = `🗑️ Deleted ${pending.name ? `*${pending.name}*` : 'that link'}. Gone.`;
+      } else if (pending.kind === 'delete_poll') {
+        await savvyCalService.deletePoll(pending.id);
+        text = `🗑️ Deleted the poll ${pending.name ? `*${pending.name}*` : ''}.`.trim();
+      } else {
+        text = 'I lost track of what to confirm — mind asking again?';
+      }
+      dataStore.setThreadData(channel, thread_ts, {
+        pending_sc_action: null,
+        last_action: pending.kind,
+        last_action_time: Date.now(),
+        ...(pending.kind === 'delete_link' ? { last_link_id: null, last_link_url: null } : {})
+      });
+      await client.chat.postMessage({ channel, thread_ts, text });
+    } catch (error) {
+      console.error('Confirm SavvyCal action error:', error);
+      await client.chat.postMessage({ channel, thread_ts, text: `Couldn't do that: ${error.message}` });
+    }
+  }
+
+  // Cancel a staged link/poll action.
+  async cancelPendingScAction({ client, channel, thread_ts }) {
+    dataStore.setThreadData(channel, thread_ts, { pending_sc_action: null });
+    await client.chat.postMessage({ channel, thread_ts, text: 'Left it as-is — nothing changed.' });
+  }
+
+  // Preview card for a scheduling poll before it's created/sent.
+  // `pending` = { name, durationMinutes, slots:[{start_at,end_at}], attendees:[] }.
+  buildPollPreviewBlocks(pending, stableTs, timezone) {
+    const fmt = iso => {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return String(iso);
+      return d.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit', hour12: true, timeZone: timezone
+      });
+    };
+    const slotLines = (pending.slots || [])
+      .map((s, i) => `${i + 1}. ${fmt(s.start_at || s.start)}`)
+      .join('\n');
+    let detail = `*${pending.name}* · ${pending.durationMinutes} min\n\n*Proposed times:*\n${slotLines}`;
+    if (pending.attendees && pending.attendees.length) {
+      detail += `\n\n*People:* ${pending.attendees.join(', ')}`;
+    }
+    const hasPeople = pending.attendees && pending.attendees.length;
+    const sendLabel = hasPeople ? 'Send poll' : 'Create poll';
+    return [
+      { type: 'section', text: { type: 'mrkdwn', text: `*Scheduling poll:*\n\n${detail}` } },
+      {
+        type: 'actions',
+        elements: [
+          { type: 'button', text: { type: 'plain_text', text: sendLabel }, style: 'primary', action_id: 'sc_poll_send', value: stableTs },
+          { type: 'button', text: { type: 'plain_text', text: 'Cancel' }, style: 'danger', action_id: 'sc_poll_cancel', value: stableTs }
+        ]
+      }
+    ];
+  }
+
+  // Create + send the staged poll (triggered by the Send button).
+  async confirmPendingScPoll({ client, channel, thread_ts }) {
+    const threadData = dataStore.getThreadData(channel, thread_ts);
+    const pending = threadData.pending_sc_poll;
+    if (!pending) {
+      return await client.chat.postMessage({
+        channel, thread_ts, text: 'That poll already cleared out — nothing pending to send.'
+      });
+    }
+    try {
+      const { id, url, slotCount, invited } = await savvyCalService.createPoll({
+        name: pending.name,
+        durationMinutes: pending.durationMinutes,
+        slots: pending.slots,
+        attendees: pending.attendees
+      });
+      dataStore.setThreadData(channel, thread_ts, {
+        pending_sc_poll: null,
+        last_poll_id: id || null,
+        last_action: 'created_scheduling_poll',
+        last_action_time: Date.now()
+      });
+      let msg = `✅ Poll *${pending.name}* is live with ${slotCount} time${slotCount === 1 ? '' : 's'} to vote on.`;
+      if (invited) msg += ` Invited ${invited} ${invited === 1 ? 'person' : 'people'}.`;
+      if (url) msg += `\n${url}`;
+      if (!invited && url) msg += `\n\nShare that link with the group so they can vote.`;
+      await client.chat.postMessage({ channel, thread_ts, text: msg });
+    } catch (error) {
+      console.error('Confirm poll error:', error);
+      await client.chat.postMessage({ channel, thread_ts, text: `Couldn't create the poll: ${error.message}` });
+    }
+  }
+
+  // Cancel a staged poll.
+  async cancelPendingScPoll({ client, channel, thread_ts }) {
+    dataStore.setThreadData(channel, thread_ts, { pending_sc_poll: null });
+    await client.chat.postMessage({ channel, thread_ts, text: 'Scrapped the poll — nothing sent.' });
+  }
+
   // Generate scheduling blocks for Slack interactive components
   createSchedulingBlocks(title, minutes, url, linkId) {
     return [
