@@ -9,7 +9,7 @@
 
 const { buildSystem } = require('./donnaPrompt');
 const { buildTools } = require('./donnaTools');
-const { fetchThreadTranscript, formatTranscript } = require('./threadReader');
+const { fetchThreadTranscript, fetchRecentHistory, formatTranscript } = require('./threadReader');
 const { resolveClient } = require('./clientResolver');
 const clientRegistry = require('../services/clientRegistry');
 const memoryStore = require('../services/memoryStore');
@@ -61,10 +61,11 @@ function extractText(message) {
  * @param {string} p.channel
  * @param {string} [p.thread_ts]
  * @param {string} p.userId
+ * @param {boolean} [p.isDM]         True when this is a direct message (no thread).
  * @param {string} [p.botUserId]     Donna's own Slack user id (to label her lines).
  * @param {object} [p.logger]
  */
-async function handleMessage({ text, client, channel, thread_ts, userId, botUserId, logger }) {
+async function handleMessage({ text, client, channel, thread_ts, userId, isDM = false, botUserId, logger }) {
   const anthropic = getClient();
   if (!anthropic) {
     return client.chat.postMessage({
@@ -74,15 +75,20 @@ async function handleMessage({ text, client, channel, thread_ts, userId, botUser
     });
   }
 
-  // Read the thread so Donna understands what was said before she was tagged.
+  // Read prior conversation so Donna understands the context she's replying into.
+  // In a thread, that's the thread transcript. In a DM (no thread_ts), pull the
+  // channel's recent history instead — otherwise she'd see only the one message
+  // in front of her and lose the back-and-forth between turns.
   let transcript = [];
   if (thread_ts) {
     transcript = await fetchThreadTranscript(client, channel, thread_ts, { botUserId });
-    if (transcript.length) {
-      dataStore.setThreadData(channel, thread_ts, {
-        recent_messages: transcript.map(m => ({ author: m.author, text: m.text }))
-      });
-    }
+  } else if (isDM) {
+    transcript = await fetchRecentHistory(client, channel, { botUserId });
+  }
+  if (transcript.length) {
+    dataStore.setThreadData(channel, thread_ts, {
+      recent_messages: transcript.map(m => ({ author: m.author, text: m.text }))
+    });
   }
 
   const timezone = await TimezoneHelper.getUserTimezone(client, userId);
@@ -116,7 +122,8 @@ async function handleMessage({ text, client, channel, thread_ts, userId, botUser
 
   let userContent = '';
   if (transcript.length) {
-    userContent += `Conversation in this Slack thread so far:\n${formatTranscript(transcript)}\n\n`;
+    const label = thread_ts ? 'Conversation in this Slack thread so far' : 'Recent conversation so far';
+    userContent += `${label}:\n${formatTranscript(transcript)}\n\n`;
   }
   if (resolution.status === 'confident' && activeClient) {
     userContent += `Active client for this message: ${activeClient.name} (📁). If that's wrong, the user will say so.\n\n`;

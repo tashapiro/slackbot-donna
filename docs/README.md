@@ -89,6 +89,13 @@ whole thread (via Slack's `conversations.replies`) — including messages posted
 like **Fireflies / "Fred"** — and builds a transcript. That transcript is fed to the LLM,
 so Donna understands what was said *before* you tagged her.
 
+> **DMs read recent history too.** DMs aren't threaded, so a message has no `thread_ts` and
+> the thread reader can't see anything. The agentic brain therefore falls back to
+> `conversations.history` for the DM (`utils/threadReader.js` → `fetchRecentHistory`, needs
+> `im:history`), so Donna follows the back-and-forth across turns in a DM instead of treating
+> each message in isolation. Without this she'd answer a context-dependent follow-up like
+> "I'm ok with the following week" with "I don't have the earlier part of this in front of me."
+
 Two things this unlocks:
 
 **1. Answer questions about the conversation.** e.g. after a Fred call recap:
