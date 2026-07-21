@@ -726,6 +726,7 @@ async function processDonnaMessage(text, event, client, logger, isMention = true
       channel,
       thread_ts: responseThreadTs,
       userId: user,
+      isDM: isDirectMessage(channel),
       botUserId: BOT_USER_ID,
       logger
     });

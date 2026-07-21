@@ -4,10 +4,11 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/check-syntax.js && node scripts/check-phase2.js && node scripts/check-savvycal.js",
+    "test": "node scripts/check-syntax.js && node scripts/check-phase2.js && node scripts/check-savvycal.js && node scripts/check-dm-memory.js",
     "check": "node scripts/check-syntax.js",
     "check:phase2": "node scripts/check-phase2.js",
     "check:savvycal": "node scripts/check-savvycal.js",
+    "check:dm-memory": "node scripts/check-dm-memory.js",
     "start": "node app.js",
     "dev": "node app.js"
   },

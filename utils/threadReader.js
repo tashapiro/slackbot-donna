@@ -33,23 +33,11 @@ function cleanText(text) {
 }
 
 /**
- * Fetch a thread's messages and return a lightweight transcript, oldest first:
+ * Turn raw Slack messages (oldest first) into a lightweight transcript:
  *   [{ author, text, ts, isBot }]
- * Empty/blank messages are dropped. Returns [] on any error or non-thread.
+ * Empty/blank messages are dropped.
  */
-async function fetchThreadTranscript(client, channel, thread_ts, { limit = 50, botUserId = null } = {}) {
-  if (!thread_ts) return [];
-
-  let messages = [];
-  try {
-    const res = await client.conversations.replies({ channel, ts: thread_ts, limit });
-    messages = res.messages || [];
-  } catch (err) {
-    // Most commonly a missing history scope — surface it in logs, degrade gracefully.
-    console.warn(`Could not read thread ${channel}::${thread_ts}: ${err.message}`);
-    return [];
-  }
-
+async function messagesToTranscript(client, messages, botUserId) {
   const transcript = [];
   for (const m of messages) {
     const text = cleanText(m.text);
@@ -68,8 +56,50 @@ async function fetchThreadTranscript(client, channel, thread_ts, { limit = 50, b
 
     transcript.push({ author, text, ts: m.ts, isBot });
   }
-
   return transcript;
+}
+
+/**
+ * Fetch a thread's messages and return a lightweight transcript, oldest first:
+ *   [{ author, text, ts, isBot }]
+ * Empty/blank messages are dropped. Returns [] on any error or non-thread.
+ */
+async function fetchThreadTranscript(client, channel, thread_ts, { limit = 50, botUserId = null } = {}) {
+  if (!thread_ts) return [];
+
+  let messages = [];
+  try {
+    const res = await client.conversations.replies({ channel, ts: thread_ts, limit });
+    messages = res.messages || [];
+  } catch (err) {
+    // Most commonly a missing history scope — surface it in logs, degrade gracefully.
+    console.warn(`Could not read thread ${channel}::${thread_ts}: ${err.message}`);
+    return [];
+  }
+
+  return messagesToTranscript(client, messages, botUserId);
+}
+
+/**
+ * Fetch a channel's (typically a DM's) most recent top-level messages and return
+ * a transcript, oldest first. This is the un-threaded counterpart to
+ * fetchThreadTranscript: DMs aren't threaded, so each message has no thread_ts and
+ * the thread reader can't see any history. conversations.history returns newest
+ * first, so we reverse it. Returns [] on any error (e.g. a missing im:history scope).
+ */
+async function fetchRecentHistory(client, channel, { limit = 25, botUserId = null } = {}) {
+  if (!channel) return [];
+
+  let messages = [];
+  try {
+    const res = await client.conversations.history({ channel, limit });
+    messages = (res.messages || []).slice().reverse(); // oldest → newest
+  } catch (err) {
+    console.warn(`Could not read history for ${channel}: ${err.message}`);
+    return [];
+  }
+
+  return messagesToTranscript(client, messages, botUserId);
 }
 
 /** Render a transcript array into a plain-text block for an LLM prompt. */
@@ -77,4 +107,4 @@ function formatTranscript(transcript = []) {
   return transcript.map(m => `${m.author}: ${m.text}`).join('\n');
 }
 
-module.exports = { fetchThreadTranscript, formatTranscript, resolveUserName };
+module.exports = { fetchThreadTranscript, fetchRecentHistory, formatTranscript, resolveUserName };
