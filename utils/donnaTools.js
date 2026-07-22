@@ -7,12 +7,64 @@
 const asanaService = require('../services/asana');
 const googleCalendarService = require('../services/googleCalendar');
 const savvyCalService = require('../services/savvycal');
+const firefliesService = require('../services/fireflies');
+const gmailService = require('../services/gmail');
 const memoryStore = require('../services/memoryStore');
 const TimezoneHelper = require('./timezoneHelper');
 const projectHandler = require('../handlers/projects');
 const calendarHandler = require('../handlers/calendar');
 const schedulingHandler = require('../handlers/scheduling');
+const commsHandler = require('../handlers/comms');
 const dataStore = require('./dataStore');
+
+// The Fireflies notetaker's guest address — adding/removing it on a calendar event is how
+// Fred gets onto (or off) an upcoming meeting. Configurable in case the workspace uses a
+// custom notetaker address.
+const NOTETAKER_EMAIL = process.env.FIREFLIES_NOTETAKER_EMAIL || 'fred@fireflies.ai';
+
+// ── Small pure formatters shared by the Fireflies / notetaker / email tools ────
+function fmtEpoch(ms, tz) {
+  if (!ms) return '(no date)';
+  const d = new Date(Number(ms));
+  if (isNaN(d.getTime())) return '(no date)';
+  return d.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz
+  });
+}
+function fmtEventTime(event, tz) {
+  const start = new Date(event.start.dateTime || event.start.date);
+  if (isNaN(start.getTime())) return '';
+  return start.toLocaleString('en-US', {
+    weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: tz
+  });
+}
+function formatParticipants(list) {
+  if (!list || !list.length) return '(no participants listed)';
+  return list.map(p => {
+    if (p.name && p.email) return `${p.name} <${p.email}>`;
+    return p.email || p.name || '(unknown)';
+  }).join(', ');
+}
+// Accept an array or a comma/semicolon-separated string; return a clean list.
+function asList(v) {
+  if (!v) return [];
+  const arr = Array.isArray(v) ? v : String(v).split(/[,;]/);
+  return arr.map(s => String(s).trim()).filter(Boolean);
+}
+// Find upcoming calendar events, optionally filtered by fuzzy title and/or a specific date.
+async function findCalendarEvents({ meeting, date, tz }) {
+  let events = date
+    ? await googleCalendarService.getEventsForDate(date, tz)
+    : await googleCalendarService.getEventsThisWeek(tz);
+  if (meeting && meeting.trim()) {
+    const needle = meeting.trim().toLowerCase();
+    events = events.filter(e => (e.summary || '').toLowerCase().includes(needle));
+  }
+  return events || [];
+}
+function notetakerPresent(event) {
+  return (event.attendees || []).some(a => (a.email || '').toLowerCase() === NOTETAKER_EMAIL.toLowerCase());
+}
 
 /**
  * Build the tool set bound to one Slack request context.
@@ -594,6 +646,237 @@ function buildTools({ client, channel, thread_ts, userId, activeClient = null, c
           blocks: schedulingHandler.buildScActionConfirmBlocks(pending, stableTs)
         });
         return 'A Delete/Cancel confirmation card is now shown to the user. Wait for them to confirm — do not claim it is deleted yet.';
+      }
+    },
+
+    // ── Fireflies: meeting notes & transcripts ───────────────────────────────
+    {
+      name: 'list_meetings',
+      description:
+        'List recent meetings recorded by Fireflies (the notetaker, "Fred") — title, date, and ' +
+        'how many people attended. Use this to find which call the user means before pulling ' +
+        'notes or a transcript.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'How many recent meetings to list (default 10, max 25).' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ limit }) => {
+        if (!firefliesService.isEnabled()) {
+          return "Fireflies isn't configured (no FIREFLIES_API_KEY), so I can't pull meeting notes. Tell the user.";
+        }
+        const meetings = await firefliesService.getRecentMeetings(Math.min(parseInt(limit, 10) || 10, 25));
+        if (!meetings.length) return 'No recent Fireflies meetings found.';
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const lines = meetings.map(m =>
+          `- ${fmtEpoch(m.date, tz)} — ${m.title}${m.participants.length ? ` (${m.participants.length} people)` : ''} [id: ${m.id}]`);
+        return `Recent Fireflies meetings (${meetings.length}):\n${lines.join('\n')}`;
+      }
+    },
+
+    {
+      name: 'get_meeting_notes',
+      description:
+        "Get Fireflies notes for a meeting: overview, action items, and the participant list " +
+        '(with emails). Identify the meeting by name, or omit to use the most recent call ' +
+        '("my last call"). Use this to summarize a call, or to get participant emails before ' +
+        'drafting a follow-up email.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          meeting: { type: 'string', description: 'Meeting name/title, or "last" for the most recent. Omit for the most recent.' },
+          meeting_id: { type: 'string', description: 'Exact Fireflies transcript id, if you already have it.' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ meeting, meeting_id }) => {
+        if (!firefliesService.isEnabled()) {
+          return "Fireflies isn't configured (no FIREFLIES_API_KEY), so I can't pull meeting notes. Tell the user.";
+        }
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const r = await firefliesService.resolveMeeting({ id: meeting_id, title: meeting });
+        if (r.error && !r.candidates) return r.error;
+        if (r.candidates) {
+          const lines = r.candidates.map(c => `- ${c.title} (${fmtEpoch(c.date, tz)}) [id: ${c.id}]`);
+          return `More than one meeting could match. Ask the user which one:\n${lines.join('\n')}`;
+        }
+        const t = r.transcript;
+        let out = `*${t.title}* — ${fmtEpoch(t.date, tz)}${t.durationMinutes ? ` · ${t.durationMinutes} min` : ''}\n`;
+        out += `Participants: ${formatParticipants(t.participants)}\n`;
+        if (t.overview) out += `\nOverview:\n${t.overview}\n`;
+        if (t.actionItems) out += `\nAction items:\n${t.actionItems}\n`;
+        if (!t.overview && !t.actionItems) {
+          out += '\n(No AI summary is available for this meeting — that may need a paid Fireflies plan. ' +
+            'You can pull the raw transcript with get_meeting_transcript.)\n';
+        }
+        out += `\n[transcript id: ${t.id}]`;
+        return out;
+      }
+    },
+
+    {
+      name: 'get_meeting_transcript',
+      description:
+        'Get the full spoken transcript of a Fireflies meeting (speaker-labeled lines). Identify ' +
+        'the meeting by name, or omit for the most recent. Use when the summary/action items ' +
+        "aren't enough and you need what was actually said.",
+      inputSchema: {
+        type: 'object',
+        properties: {
+          meeting: { type: 'string', description: 'Meeting name/title, or "last" for the most recent. Omit for the most recent.' },
+          meeting_id: { type: 'string', description: 'Exact Fireflies transcript id, if you already have it.' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ meeting, meeting_id }) => {
+        if (!firefliesService.isEnabled()) {
+          return "Fireflies isn't configured (no FIREFLIES_API_KEY), so I can't pull transcripts. Tell the user.";
+        }
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const r = await firefliesService.resolveMeeting({ id: meeting_id, title: meeting });
+        if (r.error && !r.candidates) return r.error;
+        if (r.candidates) {
+          const lines = r.candidates.map(c => `- ${c.title} (${fmtEpoch(c.date, tz)}) [id: ${c.id}]`);
+          return `More than one meeting could match. Ask the user which one:\n${lines.join('\n')}`;
+        }
+        const t = r.transcript;
+        const text = firefliesService.constructor.transcriptText(t);
+        if (!text.trim()) return `No transcript text is available for "${t.title}".`;
+        return `Transcript — *${t.title}* (${fmtEpoch(t.date, tz)}):\n\n${text}`;
+      }
+    },
+
+    // ── Fireflies "Fred" on an upcoming call (via the Google Calendar guest) ──
+    {
+      name: 'check_notetaker',
+      description:
+        'Check whether Fireflies (Fred) is set to join an upcoming meeting — i.e. whether the ' +
+        `notetaker (${NOTETAKER_EMAIL}) is a guest on the calendar event. Identify the meeting ` +
+        'by name and/or date. Use this for "is Fred on my 2pm?" type questions.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          meeting: { type: 'string', description: 'Meeting title to match (fuzzy).' },
+          date: { type: 'string', description: 'A specific date (YYYY-MM-DD). Defaults to this week.' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ meeting, date }) => {
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const events = await findCalendarEvents({ meeting, date, tz });
+        if (!events.length) {
+          return `I couldn't find a calendar event${meeting ? ` matching "${meeting}"` : ''}${date ? ` on ${date}` : ' this week'}.`;
+        }
+        if (events.length > 1) {
+          const lines = events.slice(0, 8).map(e => `- ${e.summary || '(no title)'} — ${fmtEventTime(e, tz)}`);
+          return `Several events match — ask the user which one:\n${lines.join('\n')}`;
+        }
+        const e = events[0];
+        return notetakerPresent(e)
+          ? `✅ Fred is already on *${e.summary}* (${fmtEventTime(e, tz)}) — Fireflies will record it.`
+          : `Fred is *not* on *${e.summary}* (${fmtEventTime(e, tz)}) yet. Want me to add him?`;
+      }
+    },
+
+    {
+      name: 'toggle_notetaker',
+      description:
+        'Add or remove Fireflies (Fred) on an upcoming meeting by adding/removing the notetaker ' +
+        'as a guest on the calendar event. This shows the user a confirmation card first — it ' +
+        'does NOT change the event immediately. After calling it, tell the user to confirm; do ' +
+        'not claim it is done yet. Identify the meeting by name and/or date.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['add', 'remove'], description: 'Whether to add or remove Fred.' },
+          meeting: { type: 'string', description: 'Meeting title to match (fuzzy).' },
+          date: { type: 'string', description: 'A specific date (YYYY-MM-DD). Defaults to this week.' }
+        },
+        required: ['action'],
+        additionalProperties: false
+      },
+      run: async ({ action, meeting, date }) => {
+        const tz = await TimezoneHelper.getUserTimezone(client, userId);
+        const events = await findCalendarEvents({ meeting, date, tz });
+        if (!events.length) {
+          return `I couldn't find a calendar event${meeting ? ` matching "${meeting}"` : ''}${date ? ` on ${date}` : ' this week'} to update.`;
+        }
+        if (events.length > 1) {
+          const lines = events.slice(0, 8).map(e => `- ${e.summary || '(no title)'} — ${fmtEventTime(e, tz)}`);
+          return `Several events match — ask the user which one before I change anything:\n${lines.join('\n')}`;
+        }
+        const e = events[0];
+        const present = notetakerPresent(e);
+        if (action === 'add' && present) return `Fred is already on *${e.summary}* — nothing to add.`;
+        if (action === 'remove' && !present) return `Fred isn't on *${e.summary}* — nothing to remove.`;
+
+        const pending = {
+          action,
+          eventId: e.id,
+          eventSummary: e.summary || '(no title)',
+          eventWhen: fmtEventTime(e, tz),
+          notetakerEmail: NOTETAKER_EMAIL,
+          attendees: (e.attendees || []).map(a => ({ email: a.email }))
+        };
+        dataStore.setThreadData(channel, thread_ts, { pending_notetaker: pending });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `${action === 'remove' ? 'Remove' : 'Add'} Fred ${action === 'remove' ? 'from' : 'to'} "${pending.eventSummary}"?`,
+          blocks: commsHandler.buildNotetakerToggleBlocks(pending, stableTs)
+        });
+        return `A confirmation card to ${action} Fred is now shown to the user. Wait for them to confirm — do not claim it is done yet.`;
+      }
+    },
+
+    // ── Gmail: draft a follow-up email (drafts only — never sends) ────────────
+    {
+      name: 'draft_email',
+      description:
+        'Draft an email and save it to the user\'s Gmail as a DRAFT (it is never sent — the user ' +
+        'reviews and sends it themselves). Shows a preview card with Save/Cancel first. Compose ' +
+        'the subject and body yourself in the user\'s voice: professional but warm, succinct, ' +
+        'plain language over buzzwords, technical when the topic calls for it. For a call ' +
+        'follow-up, pull the summary and participant emails with get_meeting_notes first, then ' +
+        'write a short recap and list action items grouped by owner. After calling this, tell the ' +
+        'user the draft is ready to save; do not claim it was sent.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          to: { type: 'array', items: { type: 'string' }, description: 'Recipient email addresses.' },
+          cc: { type: 'array', items: { type: 'string' }, description: 'Optional cc email addresses.' },
+          subject: { type: 'string', description: 'Email subject line.' },
+          body: { type: 'string', description: 'The full email body, in plain text, ready to send.' },
+          meeting_title: { type: 'string', description: 'Optional: the call this follows up on, shown for context on the preview.' }
+        },
+        required: ['to', 'subject', 'body'],
+        additionalProperties: false
+      },
+      run: async ({ to, cc, subject, body, meeting_title }) => {
+        if (!gmailService.isEnabled()) {
+          return "Gmail drafting isn't configured yet (needs the Google service account + an impersonation mailbox). Tell the user it's not set up.";
+        }
+        const toList = asList(to);
+        if (!toList.length) return 'A draft needs at least one recipient. Ask the user (or pull participants from the meeting notes).';
+        if (!body || !String(body).trim()) return 'The email body is empty — write the message before drafting.';
+
+        const pending = {
+          to: toList,
+          cc: asList(cc),
+          subject: subject ? String(subject).trim() : '(no subject)',
+          body: String(body),
+          meetingTitle: meeting_title ? String(meeting_title) : null
+        };
+        dataStore.setThreadData(channel, thread_ts, { pending_email_draft: pending });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Here's the draft email to ${toList.join(', ')} — confirm below to save it to Gmail.`,
+          blocks: commsHandler.buildEmailDraftBlocks(pending, stableTs)
+        });
+        return 'An email-draft preview with Save/Cancel is now shown to the user. Wait for them to confirm — do not claim it was saved or sent yet.';
       }
     },
 

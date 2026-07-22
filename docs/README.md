@@ -76,6 +76,9 @@ handlers/*.js  →  services/*.js  →  external API
 | | "meeting with John at 2pm tomorrow" | `create_meeting` |
 | | "give me the daily rundown" | `daily_rundown` |
 | Workouts (Peloton) | "recommend a 30min yoga class" | `workout_recommendation` |
+| Meetings (Fireflies) | "summarize my last call", "what were the action items from the Acme kickoff?" | agentic Fireflies tools (see below) |
+| | "is Fred on my 2pm?", "add Fireflies to the Beta sync Thursday" | agentic notetaker tools (see below) |
+| Email (Gmail) | "draft a follow-up to the people on my last call" | agentic `draft_email` (see below) |
 | Conversation | "draft an email to Maura about the project" | `general_chat` |
 
 Donna responds **in a thread** when mentioned in a channel, and stays "active" in that
@@ -205,6 +208,8 @@ resolution + memory wiring in `utils/donnaBrain.js`.
 | Postgres | Persistent scoped memory (`memoryStore`) | `DATABASE_URL`, `DATABASE_SSL` |
 | Google Sheets | Client registry (read-only) | `CLIENT_REGISTRY_SHEET_ID`, `CLIENT_REGISTRY_COL_*` (+ Google service account) |
 | SavvyCal | Scheduling links | `SAVVYCAL_TOKEN` |
+| Fireflies | Meeting notes & transcripts | `FIREFLIES_API_KEY`, `FIREFLIES_NOTETAKER_EMAIL` |
+| Gmail | Email drafts (drafts only) | `GMAIL_IMPERSONATE_EMAIL` (+ Google service account) |
 | Toggl | Time tracking | (see `services/toggl.js`) |
 | Asana | Tasks & projects | `ASANA_API_TOKEN`, `ASANA_WORKSPACE_ID` |
 | Google Calendar | Calendar | (see `services/googleCalendar.js`) |
@@ -250,6 +255,9 @@ Use it as the checklist for what to set in the Render dashboard. The most import
 | `CLIENT_REGISTRY_SHEET_ID` | Google Sheet ID for the client registry | — |
 | `ASANA_API_TOKEN` / `ASANA_WORKSPACE_ID` | Asana auth / workspace | — |
 | `SAVVYCAL_TOKEN` | SavvyCal auth | — |
+| `FIREFLIES_API_KEY` | Fireflies auth (meeting notes/transcripts) | — |
+| `FIREFLIES_NOTETAKER_EMAIL` | Notetaker guest address for add/remove Fred | `fred@fireflies.ai` |
+| `GMAIL_IMPERSONATE_EMAIL` | Mailbox to draft into (falls back to `GOOGLE_IMPERSONATE_EMAIL`) | — |
 
 ### The two brains
 
@@ -299,6 +307,45 @@ returns real bookings, then create a poll with 3–4 slots + a couple of invitee
 and `get_scheduling_poll` reflects votes. If a call errors, the logged raw response shows the exact
 path/shape to adjust.
 
+### Meetings & email (Fireflies + Gmail, agentic brain)
+
+**Phase 3.** The agentic brain (`BRAIN=agentic`) can pull meeting notes from Fireflies, control
+whether the Fireflies notetaker ("Fred") joins an upcoming call, and draft follow-up emails into
+Gmail. Tools live in `utils/donnaTools.js`; the two write flows confirm in `handlers/comms.js`.
+
+- **Fireflies notes/transcripts** (needs `FIREFLIES_API_KEY`, a Pro/Business feature) —
+  `list_meetings`, `get_meeting_notes` (overview + action items + participants with emails), and
+  `get_meeting_transcript` (full speaker-labeled text). All accept a meeting name or default to
+  the most recent ("my last call"). Wraps the Fireflies GraphQL API in `services/fireflies.js`.
+- **Fred on a call** — Fireflies joins a meeting when its notetaker is a guest on the calendar
+  event, so this is a **Google Calendar** operation, not a Fireflies-API one. `check_notetaker`
+  reports whether Fred is on a matching event; `toggle_notetaker` (add/remove) stages a
+  Confirm/Cancel card, then patches the event's guest list on confirm. The notetaker address is
+  `FIREFLIES_NOTETAKER_EMAIL` (default `fred@fireflies.ai`).
+- **Email drafts** (needs the Google service account + `GMAIL_IMPERSONATE_EMAIL`) — `draft_email`
+  composes in the user's voice and stages a preview; on confirm it saves a **Gmail draft** and
+  **never sends**. The classic flow is "draft a follow-up to the people on my last call": Donna
+  pulls the Fireflies notes for participants + summary, writes a recap with action items grouped
+  by owner, and drafts it to those participants. `services/gmail.js` authenticates as the shared
+  Google service account via **domain-wide delegation** to the user's mailbox (a service account
+  has no mailbox of its own).
+
+**Confirmation model:** everything that changes the outside world confirms first — saving an email
+draft (`donna_create_draft`) and adding/removing Fred (`donna_notetaker_confirm`), wired in
+`app.js`. Even a saved email is only a draft; there is no send path in this phase.
+
+> **Gmail one-time Workspace setup:** in Google Admin console → Security → API controls →
+> Domain-wide delegation, authorize the service account's client ID for the scope
+> `https://www.googleapis.com/auth/gmail.compose`, then set `GMAIL_IMPERSONATE_EMAIL` to the
+> mailbox to draft into. Offline logic for both integrations is covered by
+> `npm run check:fireflies-gmail`.
+
+**Live verification (on Render):** with `FIREFLIES_API_KEY` set, `list_meetings` returns real
+meetings and `get_meeting_notes` shows action items/participant emails (Fireflies' API and Gmail
+aren't reachable from CI/dev sandboxes, so these were built defensively but need a production
+pass). With Gmail delegation configured, "draft a follow-up to my last call" → confirm → a draft
+appears in your Gmail. Then `check_notetaker` / `toggle_notetaker` against a real upcoming event.
+
 ## Deployment
 
 Donna is hosted on **[Render](https://render.com)** as a long-running Node service (started
@@ -329,9 +376,12 @@ handlers/
   timeTracking.js          Toggl intents
   projects.js              Asana intents + thread task extraction (+ shared preview/confirm)
   calendar.js              Google Calendar intents + daily rundown
+  comms.js                 Email-draft + notetaker-toggle preview/confirm flows (agentic)
   workout.js               Peloton intents
 services/
   savvycal.js  toggl.js  asana.js  googleCalendar.js  peloton.js
+  fireflies.js             Fireflies GraphQL: meeting notes / transcripts (read-only)
+  gmail.js                 Gmail draft creation via service-account domain-wide delegation
   googleSheets.js          Read-only Google Sheets access (client registry source)
   clientRegistry.js        Clients from the Sheet: config-driven column mapping + cache
   memoryStore.js           Persistent scope-isolated memory (Postgres) — only DB module
@@ -339,7 +389,7 @@ utils/
   intentClassifier.js      OpenAI router brain: LLM intent + slot extraction
   donnaBrain.js            Agentic (Claude) brain: Tool Runner loop  [BRAIN=agentic]
   donnaPrompt.js           Donna's personality + operating rules (system prompt)
-  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + SavvyCal + remember/recall)
+  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + SavvyCal + Fireflies/notetaker/email + remember/recall)
   clientResolver.js        Resolve the active client per message (confident/ambiguous/none)
   googleAuth.js            Shared Google service-account credential parsing
   taskExtractor.js         LLM action-item extraction (thread → tasks, router path)
@@ -350,6 +400,8 @@ utils/
 scripts/
   check-syntax.js          Minimal smoke test (npm test) — syntax-checks all .js
   check-phase2.js          Offline checks for the resolver + memory scope filters
+  check-savvycal.js        Offline checks for the SavvyCal tools + confirm flows
+  check-fireflies-gmail.js Offline checks for the Fireflies/notetaker/email tools + confirm flows
 docs/
   README.md                How Donna works today (this file)
   roadmap.md               Evolution plan + Phase to-dos
