@@ -189,6 +189,25 @@ async function main() {
     assert.deepStrictEqual(dataStore.getThreadData(CH, TS).pending_email_draft.to, ['a@x.com', 'b@y.com']);
   });
 
+  await ok('draft_email excludes the sender when other recipients remain', async () => {
+    freshThread();
+    await tool('draft_email').run({ to: ['tanya@indievisual.tech', 'sam@acme.com'], subject: 'Recap', body: 'Hi' });
+    assert.deepStrictEqual(dataStore.getThreadData(CH, TS).pending_email_draft.to, ['sam@acme.com']);
+  });
+
+  await ok('draft_email to self only keeps self (regression: no empty-recipient failure)', async () => {
+    freshThread();
+    const res = await tool('draft_email').run({ to: ['tanya@indievisual.tech'], subject: 'Note', body: 'To me' });
+    assert.deepStrictEqual(dataStore.getThreadData(CH, TS).pending_email_draft.to, ['tanya@indievisual.tech']);
+    assert.match(res, /Wait for them to confirm/);
+  });
+
+  await ok('GmailService.finalRecipients: drops self among others, keeps self when alone, dedupes', () => {
+    assert.deepStrictEqual(gmailService.finalRecipients(['tanya@indievisual.tech', 'sam@acme.com']), ['sam@acme.com']);
+    assert.deepStrictEqual(gmailService.finalRecipients(['tanya@indievisual.tech']), ['tanya@indievisual.tech']);
+    assert.deepStrictEqual(gmailService.finalRecipients(['a@x.com', 'A@X.com', 'a@x.com']), ['a@x.com']);
+  });
+
   await ok('draft_email rejects an empty body without staging', async () => {
     freshThread();
     const res = await tool('draft_email').run({ to: ['a@x.com'], subject: 'Hi', body: '   ' });
