@@ -22,7 +22,12 @@ class CommsHandler {
     const cc = pending.cc && pending.cc.length ? `\n*Cc:* ${pending.cc.join(', ')}` : '';
     const ctx = pending.meetingTitle ? `\n_Follow-up to: ${pending.meetingTitle}_` : '';
     const body = pending.body || '';
-    const preview = body.length > 2800 ? body.slice(0, 2800) + '\n… (truncated in preview)' : body;
+    // Render the body the way it'll look in the email: **bold** → Slack *bold*, so the preview
+    // matches the sent draft (Slack needs & < > escaped to show literally).
+    const clipped = body.length > 2800 ? body.slice(0, 2800) + '\n… (truncated in preview)' : body;
+    const preview = clipped
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\*\*(.+?)\*\*/g, '*$1*');
     return [
       {
         type: 'section',
@@ -31,7 +36,7 @@ class CommsHandler {
           text: `*Draft email*${ctx}\n\n*To:* ${to || '(no recipients)'}${cc}\n*Subject:* ${pending.subject || '(no subject)'}`
         }
       },
-      { type: 'section', text: { type: 'mrkdwn', text: '```' + preview + '```' } },
+      { type: 'section', text: { type: 'mrkdwn', text: preview } },
       { type: 'section', text: { type: 'mrkdwn', text: "I'll save this as a Gmail draft — nothing gets sent." } },
       {
         type: 'actions',

@@ -44,8 +44,12 @@ Writing email in the user's voice:
   matters and stop. Plain language over buzzwords and filler ("synergy", "circle back",
   "touch base" — avoid). Be specific and technical when the subject calls for it; don't
   dumb things down.
+- Email bodies you pass to draft_email support light formatting that renders in Gmail: use
+  **double asterisks** for bold (e.g. owner names) and lines starting with "- " for bullet
+  lists. Keep it to those two — no headings, tables, or other Markdown.
 - For a call follow-up: open with a one- or two-line thanks + recap, then action items grouped
-  by owner (a short "**Name:**" list per person), then a brief close. Keep it skimmable.
+  by owner — each owner as a bold name (**Name:**) followed by "- " bullets for their items —
+  then a brief close. Keep it skimmable.
 
 Confirming before you write:
 - Anything that changes the outside world goes through a preview the user confirms: propose_tasks

@@ -129,18 +129,39 @@ class GmailService {
     return arr.map(s => String(s).trim()).filter(Boolean);
   }
 
-  /** Base64url-encode a raw RFC 2822 message (UTF-8 subject/body safe). */
+  /**
+   * Base64url-encode a full message for the Gmail API `raw` field. The body is authored in
+   * light Markdown (Donna's convention: `**bold**` for owner names, `- ` bullets for items);
+   * we send it as multipart/alternative so Gmail renders real formatting (HTML part) while
+   * plain-text clients still get a clean, marker-free version (text/plain part). Each part is
+   * base64-encoded so UTF-8 (em dashes, curly quotes) survives intact.
+   */
   static buildRawMessage({ from, to, cc, subject, body }) {
+    const boundary = '__donna_alt_boundary__';
+    const plain = GmailService.markdownToPlain(body || '');
+    const html = GmailService.markdownToHtml(body || '');
+
     const headers = [
       `From: ${from}`,
       `To: ${to.join(', ')}`,
       ...(cc && cc.length ? [`Cc: ${cc.join(', ')}`] : []),
       `Subject: ${GmailService.encodeHeader(subject)}`,
       'MIME-Version: 1.0',
-      'Content-Type: text/plain; charset="UTF-8"',
-      'Content-Transfer-Encoding: 7bit'
+      `Content-Type: multipart/alternative; boundary="${boundary}"`
     ];
-    const mime = `${headers.join('\r\n')}\r\n\r\n${body}`;
+
+    const part = (contentType, content) =>
+      `--${boundary}\r\n` +
+      `Content-Type: ${contentType}; charset="UTF-8"\r\n` +
+      'Content-Transfer-Encoding: base64\r\n\r\n' +
+      `${GmailService.b64Wrap(content)}\r\n`;
+
+    const mime =
+      `${headers.join('\r\n')}\r\n\r\n` +
+      part('text/plain', plain) +
+      part('text/html', html) +
+      `--${boundary}--`;
+
     return Buffer.from(mime, 'utf-8')
       .toString('base64')
       .replace(/\+/g, '-')
@@ -148,11 +169,57 @@ class GmailService {
       .replace(/=+$/, '');
   }
 
+  /** Base64-encode a UTF-8 string, wrapped at 76 cols per RFC 2045. */
+  static b64Wrap(str) {
+    return Buffer.from(String(str), 'utf-8').toString('base64').replace(/(.{76})/g, '$1\r\n');
+  }
+
   /** RFC 2047 encode a header value only when it has non-ASCII characters. */
   static encodeHeader(value) {
     const v = String(value);
     if (/^[\x00-\x7F]*$/.test(v)) return v;
     return `=?UTF-8?B?${Buffer.from(v, 'utf-8').toString('base64')}?=`;
+  }
+
+  /** Plain-text version of a light-Markdown body: strip **bold** markers, keep the rest as-is. */
+  static markdownToPlain(md) {
+    return String(md).replace(/\r\n/g, '\n').replace(/\*\*(.+?)\*\*/g, '$1');
+  }
+
+  /**
+   * Minimal Markdown → HTML for email bodies. Handles just what Donna emits: `**bold**`,
+   * `- `/`•`/`* ` bullet lists, blank-line paragraph breaks, and single line breaks. Everything
+   * is HTML-escaped first, so it's safe against injection from model or transcript content.
+   */
+  static markdownToHtml(md) {
+    const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const inline = s => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    const lines = String(md).replace(/\r\n/g, '\n').split('\n');
+
+    const out = [];
+    let listOpen = false;
+    let para = [];
+    const closeList = () => { if (listOpen) { out.push('</ul>'); listOpen = false; } };
+    const flushPara = () => { if (para.length) { out.push(`<p>${para.join('<br>')}</p>`); para = []; } };
+
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, '');
+      const bullet = line.match(/^\s*[-•*]\s+(.*)$/);
+      if (bullet) {
+        flushPara();
+        if (!listOpen) { out.push('<ul>'); listOpen = true; }
+        out.push(`<li>${inline(bullet[1])}</li>`);
+      } else if (!line.trim()) {
+        flushPara();
+        closeList();
+      } else {
+        closeList();
+        para.push(inline(line));
+      }
+    }
+    flushPara();
+    closeList();
+    return `<div style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.5;color:#222;">${out.join('\n')}</div>`;
   }
 }
 
