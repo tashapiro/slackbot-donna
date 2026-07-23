@@ -27,6 +27,7 @@ const timeTrackingHandler = require('./handlers/timeTracking');
 const projectHandler = require('./handlers/projects');
 const calendarHandler = require('./handlers/calendar');
 const commsHandler = require('./handlers/comms');
+const billingHandler = require('./handlers/billing');
 const workoutHandler = require('./handlers/workout');
 
 
@@ -1002,6 +1003,43 @@ app.action('donna_notetaker_cancel', async ({ ack, body, client }) => {
   const value = body.actions?.[0]?.value;
   const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
   await commsHandler.cancelPendingNotetaker({ client, channel, thread_ts });
+});
+
+// Phase 5 billing confirm flows (utils/donnaTools.js stages the pending invoice; these buttons
+// execute it against QuickBooks). The button value carries the stable thread_ts.
+
+// Create the invoice Donna proposed (propose_invoice)
+app.action('donna_invoice_confirm', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await billingHandler.confirmPendingInvoice({ client, channel, thread_ts });
+});
+
+app.action('donna_invoice_cancel', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await billingHandler.cancelPendingInvoice({ client, channel, thread_ts });
+});
+
+// Save the invoice edit Donna proposed (edit_invoice)
+app.action('donna_invoice_edit_confirm', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await billingHandler.confirmPendingInvoiceEdit({ client, channel, thread_ts });
+});
+
+app.action('donna_invoice_edit_cancel', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await billingHandler.cancelPendingInvoiceEdit({ client, channel, thread_ts });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -1,9 +1,16 @@
-# QuickBooks Online (Phase 5) — design sketch
+# QuickBooks Online (Phase 5) — design + implementation notes
 
-Concrete design for adding QBO invoice **create + edit** to Donna. This is a design doc for a
-**not-yet-built** phase (see `docs/roadmap.md` → Phase 5) — nothing here is wired yet. It exists
-so the build can start from a shape that matches the repo's conventions rather than reinventing
-them.
+Design for adding QBO invoice **create + edit** to Donna.
+
+> **Status: 5a–5c implemented** (offline-verified via `npm run check:qbo`). The live pieces are
+> `services/quickbooksTokenStore.js`, `services/quickbooks.js`, `handlers/billing.js`, the four
+> tools in `utils/donnaTools.js` (`list_invoices`, `get_invoice`, `propose_invoice`,
+> `edit_invoice`), and the confirm wiring in `app.js`. **One deviation from the sketch below:** the
+> token refresh is a plain `POST` to Intuit's token endpoint (`fetch`), **not** the `intuit-oauth`
+> package — so there's **no new dependency**. Everything else follows this design. What remains
+> before it works in prod is the Intuit app setup + env vars + a sandbox pass (5d), below.
+
+The original sketch is preserved below so the reasoning is on record.
 
 Guiding constraints, all already true in this codebase:
 - **One file wraps one API**, constructed from env vars, exporting a singleton, with an
@@ -151,9 +158,10 @@ module.exports = { isEnabled, init, load, save };
 
 Same shape as the other services: env-configured constructor, `isEnabled()` gate, thin `fetch`
 methods. The one addition is a private `getAccessToken()` that transparently refreshes and
-persists. Uses the official **`intuit-oauth`** package for the token dance (handles the
-refresh-grant HTTP + parsing); raw `fetch` for the accounting endpoints to match the codebase's
-thin-wrapper style.
+persists. (The sketch below shows the `intuit-oauth` package for the token dance; **the shipped
+code instead does a plain `POST` to Intuit's token endpoint with `fetch`** — `grant_type=
+refresh_token`, HTTP Basic client id/secret — so there's no extra dependency. Accounting
+endpoints use raw `fetch` either way.)
 
 ```js
 // services/quickbooks.js — wraps the QuickBooks Online Accounting API (invoices, customers,

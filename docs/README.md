@@ -79,6 +79,7 @@ handlers/*.js  →  services/*.js  →  external API
 | Meetings (Fireflies) | "summarize my last call", "what were the action items from the Acme kickoff?" | agentic Fireflies tools (see below) |
 | | "is Fred on my 2pm?", "add Fireflies to the Beta sync Thursday" | agentic notetaker tools (see below) |
 | Email (Gmail) | "draft a follow-up to the people on my last call" | agentic `draft_email` (see below) |
+| Billing (QuickBooks) | "invoice Acme for 10 hours at $150", "what have I invoiced Beta?", "add a $500 line to invoice 1001" | agentic invoice tools (see below) |
 | Conversation | "draft an email to Maura about the project" | `general_chat` |
 
 Donna responds **in a thread** when mentioned in a channel, and stays "active" in that
@@ -210,6 +211,7 @@ resolution + memory wiring in `utils/donnaBrain.js`.
 | SavvyCal | Scheduling links | `SAVVYCAL_TOKEN` |
 | Fireflies | Meeting notes & transcripts | `FIREFLIES_API_KEY`, `FIREFLIES_NOTETAKER_EMAIL` |
 | Gmail | Email drafts (drafts only) | `GMAIL_IMPERSONATE_EMAIL` (+ Google service account) |
+| QuickBooks Online | Invoices (create & edit) | `QBO_CLIENT_ID`, `QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, `QBO_REALM_ID`, `QBO_REFRESH_TOKEN`, `QBO_DEFAULT_ITEM` (+ `DATABASE_URL`) |
 | Toggl | Time tracking | (see `services/toggl.js`) |
 | Asana | Tasks & projects | `ASANA_API_TOKEN`, `ASANA_WORKSPACE_ID` |
 | Google Calendar | Calendar | (see `services/googleCalendar.js`) |
@@ -346,6 +348,37 @@ aren't reachable from CI/dev sandboxes, so these were built defensively but need
 pass). With Gmail delegation configured, "draft a follow-up to my last call" → confirm → a draft
 appears in your Gmail. Then `check_notetaker` / `toggle_notetaker` against a real upcoming event.
 
+### Billing — invoices (QuickBooks Online, agentic brain)
+
+**Phase 5.** The agentic brain can **create and edit invoices** in QuickBooks Online. Reads
+(`list_invoices`, `get_invoice`) are direct; writes (`propose_invoice`, `edit_invoice`) stage a
+preview and confirm in `handlers/billing.js` — nothing bills until you click. Service wrapper:
+`services/quickbooks.js`; full design in [`quickbooks-design.md`](./quickbooks-design.md).
+
+- **Invoices are single-client.** The customer defaults to the message's confidently-resolved
+  active client (📁) and you can name one to override — Donna never invoices across clients, in
+  keeping with the outbound-isolation rule. Each line takes a description, quantity, and rate;
+  lines hang off the `QBO_DEFAULT_ITEM` product/service unless one is named.
+- **Editing is read-modify-write.** QBO has no partial update, so `edit_invoice` fetches the live
+  invoice, applies the change to the full object (preserving its `Id` + `SyncToken`), previews it,
+  and POSTs on confirm.
+- **OAuth2 — Donna's first.** Unlike the static-key integrations, QBO uses a rotating refresh
+  token. It's stored durably in Postgres (`services/quickbooksTokenStore.js`, the only module
+  touching the `qbo_tokens` table — reuses `DATABASE_URL`), so **billing needs the Phase 2
+  database configured**. The access token auto-refreshes; the rotated refresh token is
+  re-persisted each time.
+
+> **QuickBooks one-time setup:** create an app in the [Intuit developer portal](https://developer.intuit.com),
+> then mint an initial refresh token once via Intuit's **OAuth 2.0 Playground** (this avoids
+> needing an inbound OAuth callback in the socket-mode worker). Set `QBO_CLIENT_ID`,
+> `QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT` (`sandbox` to start), `QBO_REALM_ID`, and the seed
+> `QBO_REFRESH_TOKEN` on Render. Offline logic is covered by `npm run check:qbo`.
+
+**Live verification (on Render):** point at the **sandbox** company first — "invoice \<a sandbox
+customer\> for 10 hours at $150" → confirm → the invoice appears in QBO; edit it (add a line,
+change the due date); restart the service and confirm billing still works (proving the rotated
+refresh token persisted). Then flip `QBO_ENVIRONMENT=production`.
+
 ## Deployment
 
 Donna is hosted on **[Render](https://render.com)** as a long-running Node service (started
@@ -377,19 +410,22 @@ handlers/
   projects.js              Asana intents + thread task extraction (+ shared preview/confirm)
   calendar.js              Google Calendar intents + daily rundown
   comms.js                 Email-draft + notetaker-toggle preview/confirm flows (agentic)
+  billing.js               QuickBooks invoice create/edit preview/confirm flows (agentic)
   workout.js               Peloton intents
 services/
   savvycal.js  toggl.js  asana.js  googleCalendar.js  peloton.js
   fireflies.js             Fireflies GraphQL: meeting notes / transcripts (read-only)
   gmail.js                 Gmail draft creation via service-account domain-wide delegation
+  quickbooks.js            QuickBooks Online Accounting API: invoices/customers/items (OAuth2)
+  quickbooksTokenStore.js  Durable QBO OAuth token store (Postgres) — only qbo_tokens module
   googleSheets.js          Read-only Google Sheets access (client registry source)
   clientRegistry.js        Clients from the Sheet: config-driven column mapping + cache
-  memoryStore.js           Persistent scope-isolated memory (Postgres) — only DB module
+  memoryStore.js           Persistent scope-isolated memory (Postgres) — only memories module
 utils/
   intentClassifier.js      OpenAI router brain: LLM intent + slot extraction
   donnaBrain.js            Agentic (Claude) brain: Tool Runner loop  [BRAIN=agentic]
   donnaPrompt.js           Donna's personality + operating rules (system prompt)
-  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + SavvyCal + Fireflies/notetaker/email + remember/recall)
+  donnaTools.js            Agentic tools wrapping the services (reads + propose_* + SavvyCal + Fireflies/notetaker/email + QuickBooks invoices + remember/recall)
   clientResolver.js        Resolve the active client per message (confident/ambiguous/none)
   googleAuth.js            Shared Google service-account credential parsing
   taskExtractor.js         LLM action-item extraction (thread → tasks, router path)
@@ -402,7 +438,9 @@ scripts/
   check-phase2.js          Offline checks for the resolver + memory scope filters
   check-savvycal.js        Offline checks for the SavvyCal tools + confirm flows
   check-fireflies-gmail.js Offline checks for the Fireflies/notetaker/email tools + confirm flows
+  check-qbo.js             Offline checks for the QuickBooks invoice tools + confirm flows
 docs/
   README.md                How Donna works today (this file)
   roadmap.md               Evolution plan + Phase to-dos
+  quickbooks-design.md     QBO billing (Phase 5) design + implementation notes
 ```

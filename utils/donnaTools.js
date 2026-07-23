@@ -9,12 +9,14 @@ const googleCalendarService = require('../services/googleCalendar');
 const savvyCalService = require('../services/savvycal');
 const firefliesService = require('../services/fireflies');
 const gmailService = require('../services/gmail');
+const quickbooksService = require('../services/quickbooks');
 const memoryStore = require('../services/memoryStore');
 const TimezoneHelper = require('./timezoneHelper');
 const projectHandler = require('../handlers/projects');
 const calendarHandler = require('../handlers/calendar');
 const schedulingHandler = require('../handlers/scheduling');
 const commsHandler = require('../handlers/comms');
+const billingHandler = require('../handlers/billing');
 const dataStore = require('./dataStore');
 
 // The Fireflies notetaker's guest address — adding/removing it on a calendar event is how
@@ -64,6 +66,47 @@ async function findCalendarEvents({ meeting, date, tz }) {
 }
 function notetakerPresent(event) {
   return (event.attendees || []).some(a => (a.email || '').toLowerCase() === NOTETAKER_EMAIL.toLowerCase());
+}
+
+// ── QuickBooks invoice helpers ─────────────────────────────────────────────────
+// Normalize raw line items from the model into a clean {description, quantity, rate, item} shape.
+function normInvoiceLines(items) {
+  return (Array.isArray(items) ? items : [])
+    .map(l => ({
+      description: l && l.description ? String(l.description).trim() : '',
+      quantity: l && l.quantity != null ? Number(l.quantity) : 1,
+      rate: l && l.rate != null ? Number(l.rate) : 0,
+      item: l && l.item ? String(l.item).trim() : null
+    }))
+    .filter(l => l.description || l.rate);
+}
+// Resolve each raw line to a QBO Item ref. Returns { lines, missing }: `lines` carry a resolved
+// { item: { Id, Name } }; `missing` lists item names not found in QuickBooks (deduped). Item
+// lookups are cached per call since a solo consultancy usually bills one default item repeatedly.
+async function resolveLineItems(rawLines, defaultItemName) {
+  const cache = new Map();
+  const lines = [];
+  const missing = new Set();
+  for (const l of rawLines) {
+    const itemName = l.item || defaultItemName;
+    const key = itemName.toLowerCase();
+    if (!cache.has(key)) cache.set(key, await quickbooksService.findItem(itemName));
+    const item = cache.get(key);
+    if (!item) { missing.add(itemName); continue; }
+    lines.push({
+      description: l.description,
+      quantity: Number(l.quantity) || 1,
+      rate: Number(l.rate) || 0,
+      item: { Id: item.Id, Name: item.Name }
+    });
+  }
+  return { lines, missing: [...missing] };
+}
+// Sum an existing invoice's sales lines (for edit previews; QBO recomputes the real total on save).
+function invoiceSalesTotal(invoice) {
+  return (invoice.Line || [])
+    .filter(l => l.DetailType === 'SalesItemLineDetail')
+    .reduce((s, l) => s + (Number(l.Amount) || 0), 0);
 }
 
 /**
@@ -879,6 +922,266 @@ function buildTools({ client, channel, thread_ts, userId, activeClient = null, c
           blocks: commsHandler.buildEmailDraftBlocks(pending, stableTs)
         });
         return 'An email-draft preview with Save/Cancel is now shown to the user. Wait for them to confirm — do not claim it was saved or sent yet.';
+      }
+    },
+
+    // ── QuickBooks: invoices (create & edit — preview-then-confirm) ───────────
+    {
+      name: 'list_invoices',
+      description:
+        'List recent invoices from QuickBooks (invoice number, customer, total, status). ' +
+        'Optionally scope to one client. Use for "what have I invoiced" / "is Acme\'s invoice paid".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          client: { type: 'string', description: 'Optional client/customer name to filter by (exact QBO customer name).' },
+          limit: { type: 'number', description: 'How many to list (default 15, max 50).' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ client: clientName, limit }) => {
+        if (!quickbooksService.isEnabled()) {
+          return "QuickBooks isn't configured (needs the QBO_* credentials + a database). Tell the user it's not set up.";
+        }
+        let customerId = null;
+        const name = clientName || (clientStatus === 'confident' && activeClient ? activeClient.name : null);
+        if (name) {
+          const customer = await quickbooksService.findCustomer(name);
+          if (!customer) return `No QuickBooks customer named "${name}". Check the exact name as it appears in QBO.`;
+          customerId = customer.Id;
+        }
+        const invoices = await quickbooksService.listInvoices({ customerId, limit: Math.min(parseInt(limit, 10) || 15, 50) });
+        if (!invoices.length) return `No invoices found${name ? ` for ${name}` : ''}.`;
+        const lines = invoices.map(inv => {
+          const num = inv.DocNumber ? `#${inv.DocNumber}` : `(id ${inv.Id})`;
+          const who = inv.CustomerRef && inv.CustomerRef.name ? inv.CustomerRef.name : '';
+          const bal = Number(inv.Balance) || 0;
+          const status = bal <= 0 ? 'paid' : (inv.DueDate ? `due ${inv.DueDate}` : 'open');
+          return `- ${num} ${who ? `— ${who} ` : ''}— $${(Number(inv.TotalAmt) || 0).toFixed(2)} (${status})`;
+        });
+        return `Invoices (${invoices.length})${name ? ` for ${name}` : ''}:\n${lines.join('\n')}`;
+      }
+    },
+
+    {
+      name: 'get_invoice',
+      description:
+        'Get one QuickBooks invoice in detail (customer, line items, total, balance, due date). ' +
+        'Identify it by its invoice number (DocNumber) or its QBO id.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          invoice_number: { type: 'string', description: 'The human-facing invoice number (DocNumber).' },
+          invoice_id: { type: 'string', description: 'The QBO internal invoice id, if you have it.' }
+        },
+        additionalProperties: false
+      },
+      run: async ({ invoice_number, invoice_id }) => {
+        if (!quickbooksService.isEnabled()) {
+          return "QuickBooks isn't configured. Tell the user it's not set up.";
+        }
+        if (!invoice_number && !invoice_id) return 'Give me an invoice number or id to look up.';
+        const inv = invoice_id
+          ? await quickbooksService.getInvoice(invoice_id)
+          : await quickbooksService.findInvoiceByNumber(invoice_number);
+        if (!inv) return `No invoice found for ${invoice_id ? `id ${invoice_id}` : `#${invoice_number}`}.`;
+        const who = inv.CustomerRef && inv.CustomerRef.name ? inv.CustomerRef.name : '(unknown customer)';
+        const lines = (inv.Line || [])
+          .filter(l => l.DetailType === 'SalesItemLineDetail')
+          .map(l => {
+            const d = l.SalesItemLineDetail || {};
+            const item = d.ItemRef && d.ItemRef.name ? d.ItemRef.name : '';
+            return `  • ${l.Description || item || '(item)'} — ${d.Qty != null ? d.Qty : 1} × $${(Number(d.UnitPrice) || 0).toFixed(2)} = $${(Number(l.Amount) || 0).toFixed(2)}`;
+          });
+        const num = inv.DocNumber ? `#${inv.DocNumber}` : `(id ${inv.Id})`;
+        const bal = Number(inv.Balance) || 0;
+        return `Invoice ${num} — ${who}\n${lines.join('\n') || '  (no line items)'}\n` +
+          `Total: $${(Number(inv.TotalAmt) || 0).toFixed(2)} · Balance: $${bal.toFixed(2)}${inv.DueDate ? ` · Due ${inv.DueDate}` : ''}\n` +
+          `[id: ${inv.Id}]`;
+      }
+    },
+
+    {
+      name: 'propose_invoice',
+      description:
+        'Propose a new QuickBooks invoice for a client. This does NOT create it — it shows the ' +
+        'user a preview card with Create / Cancel buttons, and they confirm. Provide the line ' +
+        'items (each a description, quantity, and rate). The customer defaults to the active ' +
+        "client; name one explicitly to override. After calling it, tell the user the preview " +
+        'is ready to confirm; do not claim the invoice is created.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          customer: { type: 'string', description: 'Customer name exactly as in QuickBooks. Defaults to the active client.' },
+          line_items: {
+            type: 'array',
+            description: 'The billable lines.',
+            items: {
+              type: 'object',
+              properties: {
+                description: { type: 'string', description: 'What the line is for.' },
+                quantity: { type: 'number', description: 'Quantity / hours. Defaults to 1.' },
+                rate: { type: 'number', description: 'Unit price / hourly rate in dollars.' },
+                item: { type: 'string', description: 'Optional QBO product/service name. Defaults to the configured default item.' }
+              },
+              required: ['description', 'rate'],
+              additionalProperties: false
+            }
+          },
+          due_date: { type: 'string', description: 'Optional due date (YYYY-MM-DD).' },
+          invoice_date: { type: 'string', description: 'Optional invoice/transaction date (YYYY-MM-DD). Defaults to today in QBO.' },
+          memo: { type: 'string', description: 'Optional customer-facing memo/note.' }
+        },
+        required: ['line_items'],
+        additionalProperties: false
+      },
+      run: async ({ customer, line_items, due_date, invoice_date, memo }) => {
+        if (!quickbooksService.isEnabled()) {
+          return "QuickBooks isn't configured (needs the QBO_* credentials + a database). Tell the user it's not set up.";
+        }
+        // Customer: explicit arg wins; else the confidently-resolved active client. Never guess
+        // across clients — invoices are outbound artifacts and must stay single-client.
+        const customerName = (customer && customer.trim())
+          || (clientStatus === 'confident' && activeClient ? activeClient.name : null);
+        if (!customerName) {
+          return 'Which client is this invoice for? Ask the user to name the customer (as it appears in QuickBooks).';
+        }
+        const found = await quickbooksService.findCustomer(customerName);
+        if (!found) {
+          return `No QuickBooks customer named "${customerName}". Ask the user to confirm the exact customer name as it ` +
+            'appears in QBO (or to create the customer there first) — I won\'t invoice an unknown customer.';
+        }
+
+        const raw = normInvoiceLines(line_items);
+        if (!raw.length) return 'I need at least one line item (a description and a rate) to build an invoice.';
+        const { lines, missing } = await resolveLineItems(raw, quickbooksService.defaultItemName);
+        if (missing.length) {
+          return `These products/services aren't in QuickBooks: ${missing.join(', ')}. Ask the user to add them in ` +
+            `QBO (or use the default "${quickbooksService.defaultItemName}" item) — I can't invoice an unknown item.`;
+        }
+        if (!lines.length) return 'None of the line items resolved to a QuickBooks item.';
+
+        const opts = {};
+        if (due_date) opts.dueDate = due_date;
+        if (invoice_date) opts.txnDate = invoice_date;
+        if (memo) opts.memo = memo;
+        const payload = quickbooksService.constructor.buildInvoicePayload(found, lines, opts);
+        const total = quickbooksService.constructor.lineTotal(lines);
+
+        const pending = {
+          customerName: found.DisplayName || customerName,
+          lines: lines.map(l => ({ description: l.description, quantity: l.quantity, rate: l.rate })),
+          total,
+          dueDate: due_date || null,
+          memo: memo || null,
+          payload
+        };
+        dataStore.setThreadData(channel, thread_ts, { pending_invoice: pending, pending_invoice_time: Date.now() });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Here's the invoice for ${pending.customerName} ($${total.toFixed(2)}) — confirm below.`,
+          blocks: billingHandler.buildInvoicePreviewBlocks(pending, stableTs)
+        });
+        return `An invoice preview (${lines.length} line item(s), total $${total.toFixed(2)}) for ${pending.customerName} is ` +
+          'now shown with Create / Cancel. Wait for the user to confirm — do not claim it is created yet.';
+      }
+    },
+
+    {
+      name: 'edit_invoice',
+      description:
+        'Propose changes to an existing QuickBooks invoice (add line items, change the due date, ' +
+        'or set the memo). This does NOT change it — it shows the user a preview card with Save / ' +
+        'Cancel, and they confirm. Identify the invoice by its number or id. After calling it, ' +
+        'tell the user the preview is ready; do not claim the invoice is changed.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          invoice_number: { type: 'string', description: 'The invoice number (DocNumber) to edit.' },
+          invoice_id: { type: 'string', description: 'The QBO invoice id, if you have it.' },
+          changes: {
+            type: 'object',
+            description: 'The edits to apply.',
+            properties: {
+              add_line_items: {
+                type: 'array',
+                description: 'New billable lines to append.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    description: { type: 'string' },
+                    quantity: { type: 'number' },
+                    rate: { type: 'number' },
+                    item: { type: 'string' }
+                  },
+                  required: ['description', 'rate'],
+                  additionalProperties: false
+                }
+              },
+              due_date: { type: 'string', description: 'New due date (YYYY-MM-DD).' },
+              memo: { type: 'string', description: 'New customer-facing memo.' }
+            },
+            additionalProperties: false
+          }
+        },
+        required: ['changes'],
+        additionalProperties: false
+      },
+      run: async ({ invoice_number, invoice_id, changes }) => {
+        if (!quickbooksService.isEnabled()) {
+          return "QuickBooks isn't configured. Tell the user it's not set up.";
+        }
+        if (!invoice_number && !invoice_id) return 'Give me the invoice number or id to edit.';
+        const inv = invoice_id
+          ? await quickbooksService.getInvoice(invoice_id)
+          : await quickbooksService.findInvoiceByNumber(invoice_number);
+        if (!inv) return `No invoice found for ${invoice_id ? `id ${invoice_id}` : `#${invoice_number}`}.`;
+
+        const ch = changes || {};
+        const summaryParts = [];
+        // Read-modify-write: mutate a copy of the FULL object, preserving Id + SyncToken.
+        const payload = JSON.parse(JSON.stringify(inv));
+
+        if (Array.isArray(ch.add_line_items) && ch.add_line_items.length) {
+          const raw = normInvoiceLines(ch.add_line_items);
+          const { lines, missing } = await resolveLineItems(raw, quickbooksService.defaultItemName);
+          if (missing.length) {
+            return `These products/services aren't in QuickBooks: ${missing.join(', ')}. Ask the user to add them in QBO first.`;
+          }
+          const newLines = lines.map(l => ({
+            DetailType: 'SalesItemLineDetail',
+            Amount: Math.round((Number(l.quantity) || 1) * (Number(l.rate) || 0) * 100) / 100,
+            Description: l.description || l.item.Name,
+            SalesItemLineDetail: { ItemRef: { value: l.item.Id, name: l.item.Name }, Qty: Number(l.quantity) || 1, UnitPrice: Number(l.rate) || 0 }
+          }));
+          // Keep only existing sales lines (QBO recomputes SubTotal/Total on save) + the new ones.
+          payload.Line = (payload.Line || []).filter(l => l.DetailType === 'SalesItemLineDetail').concat(newLines);
+          summaryParts.push(`Add ${newLines.length} line item(s):\n` +
+            newLines.map(l => `• ${l.Description} — ${l.SalesItemLineDetail.Qty} × $${l.SalesItemLineDetail.UnitPrice.toFixed(2)}`).join('\n'));
+        }
+        if (ch.due_date) { payload.DueDate = ch.due_date; summaryParts.push(`Due date → ${ch.due_date}`); }
+        if (ch.memo != null) { payload.CustomerMemo = { value: String(ch.memo) }; summaryParts.push(`Memo → "${ch.memo}"`); }
+
+        if (!summaryParts.length) return 'No changes were specified. Tell me what to change (line items, due date, or memo).';
+
+        const newTotal = invoiceSalesTotal(payload);
+        const pending = {
+          invoiceLabel: inv.DocNumber ? `#${inv.DocNumber}` : `(id ${inv.Id})`,
+          customerName: inv.CustomerRef && inv.CustomerRef.name ? inv.CustomerRef.name : '',
+          changeSummary: summaryParts.join('\n'),
+          newTotal,
+          payload
+        };
+        dataStore.setThreadData(channel, thread_ts, { pending_invoice_edit: pending, pending_invoice_edit_time: Date.now() });
+        const stableTs = thread_ts || 'root';
+        await client.chat.postMessage({
+          channel, thread_ts,
+          text: `Here are the changes to invoice ${pending.invoiceLabel} — confirm below.`,
+          blocks: billingHandler.buildInvoiceEditPreviewBlocks(pending, stableTs)
+        });
+        return `An edit preview for invoice ${pending.invoiceLabel} is now shown with Save / Cancel. Wait for the user to ` +
+          'confirm — do not claim it is changed yet.';
       }
     },
 

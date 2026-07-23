@@ -341,13 +341,12 @@ and deeper client/project tracking (e.g. `Client → Asana project` auto-routing
 last call" returns notes; "draft a follow-up to the people on my last call" → confirm → a draft
 lands in Gmail; "is Fred on my next Acme call?" and add/remove Fred against a real event.
 
-## Phase 5 — Billing (QuickBooks Online) — feasibility ✅, not yet built
+## Phase 5 — Billing (QuickBooks Online) — 5a–5c built (offline-verified), needs live sandbox pass
 
 Adds the long-planned billing capability (see Mission → "one day maybe billing (QuickBooks)"):
 Donna can **create and edit invoices in QuickBooks Online** from Slack, natural-language →
-preview card → confirm → QBO. Feasibility was assessed on branch
-`claude/qbo-invoice-creation-feasibility-da6y4w`; the concrete design lives in
-[`quickbooks-design.md`](./quickbooks-design.md).
+preview card → confirm → QBO. Built on branch `claude/qbo-invoice-creation-feasibility-da6y4w`;
+the concrete design + implementation notes live in [`quickbooks-design.md`](./quickbooks-design.md).
 
 ### Verdict: feasible, and a clean fit — with exactly one genuinely new piece (OAuth2)
 
@@ -385,23 +384,38 @@ in the socket-mode worker, the **initial** refresh token is minted once out-of-b
 OAuth 2.0 Playground or a one-off local script) and seeded; the service auto-refreshes and
 re-persists from then on — the same "paste a token once" pragmatism as Peloton, but durable.
 
-### Sub-steps (when this phase is scheduled)
-- **5a — Auth foundation.** `services/quickbooksTokenStore.js` (Postgres, defensively gated) +
-  `services/quickbooks.js` OAuth lifecycle: seed refresh token, auto-refresh access token,
-  persist rotations. One-time seeding documented; no callback route required.
-- **5b — Accounting service.** Invoice + customer + item methods on `services/quickbooks.js`
-  (create, get, query, read-modify-write update with `SyncToken`), sandbox-first.
-- **5c — Tools + confirm flow.** Read tools (`list_invoices`, `get_invoice`) direct; write tools
-  (`propose_invoice`, `edit_invoice`) staged through `handlers/billing.js` Confirm/Cancel cards,
-  wired in `app.js`. Customer resolution via the client registry (`qbo_customer_id`).
-- **5d — Config + docs.** Add the `QBO_*` block to `.env.example`, a Deployment note in
-  `docs/README.md`, and an offline `npm run check:qbo` (token-store gating + invoice-payload
-  builder, no live API — same shape as `check:phase2` / `check:fireflies-gmail`).
+### Sub-steps
+- [x] **5a — Auth foundation.** `services/quickbooksTokenStore.js` (Postgres, defensively gated,
+      the only module touching `qbo_tokens`) + `services/quickbooks.js` OAuth lifecycle: seed
+      refresh token from `QBO_REFRESH_TOKEN`, auto-refresh the ~1h access token on demand, persist
+      the rotated refresh token. Token refresh is a plain `POST` to Intuit's token endpoint (no new
+      dependency); no inbound callback route required.
+- [x] **5b — Accounting service.** Invoice + customer + item methods on `services/quickbooks.js`
+      (create, get, query by DocNumber, list, read-modify-write update preserving `Id`+`SyncToken`),
+      plus pure `buildInvoicePayload` / `lineTotal` helpers. Sandbox/production base URLs by
+      `QBO_ENVIRONMENT`; `minorversion` pinned.
+- [x] **5c — Tools + confirm flow.** Read tools (`list_invoices`, `get_invoice`) direct; write
+      tools (`propose_invoice`, `edit_invoice`) staged through `handlers/billing.js` Confirm/Cancel
+      cards, wired in `app.js` (`donna_invoice_*`). Customer defaults to the confidently-resolved
+      active client (outbound-single-client rule); a named customer overrides. Item resolution via
+      `QBO_DEFAULT_ITEM`. Prompt updated (`utils/donnaPrompt.js`).
+- [x] **5d (partial) — Config + offline check.** `QBO_*` block added to `.env.example`;
+      `npm run check:qbo` (21 checks: token-store gating, payload builders, all four tools, both
+      confirm flows) added to the `npm test` chain. _Still open: a QBO how-it-works/deploy note in
+      `docs/README.md`._
 
-**Live checklist (on Render, when built):** create an Intuit developer app; set `QBO_CLIENT_ID`,
-`QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, `QBO_REALM_ID`, and the seed `QBO_REFRESH_TOKEN`; confirm
-against the **sandbox** company first (create an invoice, edit it, verify the refresh-token
-rotation persists across a restart) before pointing at the production realm.
+### Still to do (live)
+- [ ] **Intuit app + seed.** Create an Intuit developer app; on Render set `QBO_CLIENT_ID`,
+      `QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, `QBO_REALM_ID`, and the one-time seed
+      `QBO_REFRESH_TOKEN` (mint via Intuit's OAuth 2.0 Playground). `DATABASE_URL` must be set (the
+      token store shares the Phase 2 Postgres).
+- [ ] **Sandbox pass.** Against the **sandbox** company: create an invoice, edit it (add a line,
+      change due date), and confirm the refresh-token rotation persists across a restart. Then flip
+      `QBO_ENVIRONMENT=production`.
+- [ ] **Open questions (deferred by design).** Auto-create a default Item vs. require pre-existing
+      (today: require, with `QBO_DEFAULT_ITEM`); add a `qbo_customer_id` column to the registry vs.
+      resolve customers by name (today: name match via `findCustomer`); send-invoice (`.../send`)
+      as a later slice.
 
 ## How we work through the phases
 

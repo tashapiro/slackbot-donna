@@ -98,8 +98,11 @@ Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
   to-dos, and this file when conventions change.
 - Commit with clear messages; push with `git push -u origin <branch>`.
 - Don't open a PR or push to `main` without explicit permission.
-- Current working branch: `claude/donna-fireflies-gmail-d6lxil` (Phase 3, first slice:
-  Fireflies-direct meeting notes/transcripts, notetaker "Fred" control on upcoming calls (via the
-  Google Calendar guest list), and Gmail email drafting (draft-only) — as tools in
-  `utils/donnaTools.js` with confirm flows in `handlers/comms.js`, not the old router). Update
-  this line when a new phase branch starts.
+- Current working branch: `claude/qbo-invoice-creation-feasibility-da6y4w` (Phase 5, billing:
+  QuickBooks Online invoice create/edit. QBO is the first OAuth2 integration — a durable, self-
+  refreshing token store in Postgres (`services/quickbooksTokenStore.js`, seeded once via
+  `QBO_REFRESH_TOKEN`). `services/quickbooks.js` wraps the Accounting API; tools `list_invoices` /
+  `get_invoice` / `propose_invoice` / `edit_invoice` in `utils/donnaTools.js` with confirm flows in
+  `handlers/billing.js` (`donna_invoice_*` in `app.js`). Offline check: `npm run check:qbo`. Live
+  Intuit-app setup + sandbox pass still pending — see `docs/roadmap.md` → Phase 5). Update this
+  line when a new phase branch starts.
