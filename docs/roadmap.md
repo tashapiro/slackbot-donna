@@ -88,7 +88,7 @@ it makes every future capability cheap to add.
 | **0** | Cleanup | Remove dead code / dupes so the rebuild starts clean. Non-breaking. |
 | **1** | Agentic core | Tool Runner loop on Sonnet 5 + real personality prompt; existing services as tools. Multi-step + natural conversation start working. Runs alongside the old router behind a flag. |
 | **2** | Memory & client context | Scoped, persistent memory (personal / business-global / per-client) with **client isolation enforced in storage**; a client registry from the user's Google Sheet; per-message client resolution. Must survive Render redeploys. See the design section below. |
-| **3** | Priority functions | Email (draft + send, triage), Fireflies-direct for meetings/notes, deeper client/project tracking — each added as a tool. |
+| **3** | Priority functions | Email (draft + send, triage), Fireflies-direct for meetings/notes, deeper client/project tracking — each added as a tool. _(In progress — Fireflies notes + notetaker control + Gmail drafts landed; see below.)_ |
 | **4** | Proactivity | Scheduler for the morning brief, follow-up nudges, meeting prep — reusing the daily-rundown logic. Render Cron Jobs, or an in-process `node-cron` inside the worker. |
 
 Each phase is independently shippable; after Phase 1 everything else is additive.
@@ -298,6 +298,47 @@ restart; recall never returns another client's rows.
 - **Database engine:** **Render Postgres** (`pg` + `DATABASE_URL`), keeping everything in-platform.
   Swappable behind `memoryStore` (a connection-string choice). Use the small paid tier for
   durability.
+
+## Phase 3 — Priority functions (in progress)
+
+Branch `claude/donna-fireflies-gmail-d6lxil`. First slice of Phase 3: Fireflies-direct for
+meetings/notes, controlling the notetaker on upcoming calls, and Gmail email drafting. All added
+as tools on the agentic brain (`BRAIN=agentic`), additive and defensively gated (no key/config →
+the tool reports "not configured" and the bot runs exactly as before). Offline-verified
+(`npm run check:fireflies-gmail`); live end-to-end needs real keys on Render (Fireflies/Gmail
+aren't reachable from CI/dev sandboxes — same as the Phase 1 `ANTHROPIC_API_KEY` / SavvyCal steps).
+
+- [x] **Fireflies notes/transcripts.** `services/fireflies.js` wraps the Fireflies GraphQL API
+      (Bearer `FIREFLIES_API_KEY`), defensive to plan-gated fields. Tools: `list_meetings`,
+      `get_meeting_notes` (overview + action items + participants with emails), `get_meeting_transcript`
+      (speaker-labeled text). Each resolves a meeting by name or defaults to the most recent
+      ("my last call"), asking which one when several match.
+- [x] **Notetaker ("Fred") on a call.** Modeled as a **Google Calendar** guest operation (the
+      Fireflies API doesn't cleanly add the notetaker to a specific *upcoming* meeting; calendar
+      guest membership is what makes Fireflies join). `check_notetaker` reports presence;
+      `toggle_notetaker` add/remove goes through a Confirm/Cancel card (`handlers/comms.js`),
+      patching the event's guest list on confirm. Address from `FIREFLIES_NOTETAKER_EMAIL`
+      (default `fred@fireflies.ai`).
+- [x] **Gmail drafts (draft only — no send).** `services/gmail.js` authenticates as the shared
+      Google service account via **domain-wide delegation** to the user's mailbox
+      (`GMAIL_IMPERSONATE_EMAIL`, falls back to `GOOGLE_IMPERSONATE_EMAIL`; needs the
+      `gmail.compose` scope granted in Workspace admin). `draft_email` composes in the user's
+      voice, previews in Slack, and on confirm saves a Gmail draft (`handlers/comms.js` +
+      `donna_create_draft`). Follow-up flow: `get_meeting_notes` → recap + action items by owner →
+      draft to participants.
+- [x] **Prompt + voice.** `utils/donnaPrompt.js` gains the Fireflies/notetaker/email capabilities
+      and an email-voice section (professional-not-stiff, succinct, plain language over buzzwords,
+      technical when needed; call follow-ups = brief recap + action items grouped by owner). The
+      confidentiality rule already keeps outbound artifacts single-client.
+
+Still open in Phase 3 (later slices): **sending** email (this slice is draft-only), email triage,
+and deeper client/project tracking (e.g. `Client → Asana project` auto-routing from the registry).
+
+**Live checklist (on Render):** set `FIREFLIES_API_KEY`; grant the service account the
+`gmail.compose` scope (Admin → Security → API controls → Domain-wide delegation) and set
+`GMAIL_IMPERSONATE_EMAIL`; optionally set `FIREFLIES_NOTETAKER_EMAIL`. Then confirm: "summarize my
+last call" returns notes; "draft a follow-up to the people on my last call" → confirm → a draft
+lands in Gmail; "is Fred on my next Acme call?" and add/remove Fred against a real event.
 
 ## How we work through the phases
 

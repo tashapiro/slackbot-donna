@@ -26,6 +26,7 @@ const schedulingHandler = require('./handlers/scheduling');
 const timeTrackingHandler = require('./handlers/timeTracking');
 const projectHandler = require('./handlers/projects');
 const calendarHandler = require('./handlers/calendar');
+const commsHandler = require('./handlers/comms');
 const workoutHandler = require('./handlers/workout');
 
 
@@ -964,6 +965,43 @@ app.action('sc_poll_cancel', async ({ ack, body, client }) => {
   const value = body.actions?.[0]?.value;
   const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
   await schedulingHandler.cancelPendingScPoll({ client, channel, thread_ts });
+});
+
+// Phase 3 comms confirm flows (utils/donnaTools.js stages the pending action; these
+// buttons execute it). The button value carries the stable thread_ts.
+
+// Save the email Donna drafted to Gmail (drafts only — never sends)
+app.action('donna_create_draft', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await commsHandler.confirmPendingEmailDraft({ client, channel, thread_ts });
+});
+
+app.action('donna_cancel_draft', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await commsHandler.cancelPendingEmailDraft({ client, channel, thread_ts });
+});
+
+// Add/remove Fireflies (Fred) on an upcoming calendar event
+app.action('donna_notetaker_confirm', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await commsHandler.confirmPendingNotetaker({ client, channel, thread_ts });
+});
+
+app.action('donna_notetaker_cancel', async ({ ack, body, client }) => {
+  await ack();
+  const channel = body.channel?.id || body.user?.id;
+  const value = body.actions?.[0]?.value;
+  const thread_ts = value && value !== 'root' ? value : (body.message?.thread_ts || undefined);
+  await commsHandler.cancelPendingNotetaker({ client, channel, thread_ts });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

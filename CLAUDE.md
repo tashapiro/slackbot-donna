@@ -98,6 +98,8 @@ Web Service on `PORT` for HTTP mode). See `docs/README.md` → Deployment.
   to-dos, and this file when conventions change.
 - Commit with clear messages; push with `git push -u origin <branch>`.
 - Don't open a PR or push to `main` without explicit permission.
-- Current working branch: `claude/savvycal-scheduling-links-x9ynlj` (restore + extend SavvyCal
-  in the agentic brain: booking links, booked events, meeting polls — as tools in
-  `utils/donnaTools.js`, not the old router). Update this line when a new phase branch starts.
+- Current working branch: `claude/donna-fireflies-gmail-d6lxil` (Phase 3, first slice:
+  Fireflies-direct meeting notes/transcripts, notetaker "Fred" control on upcoming calls (via the
+  Google Calendar guest list), and Gmail email drafting (draft-only) — as tools in
+  `utils/donnaTools.js` with confirm flows in `handlers/comms.js`, not the old router). Update
+  this line when a new phase branch starts.
