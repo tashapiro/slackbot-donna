@@ -64,8 +64,9 @@ class GmailService {
   async createDraft({ to, cc, subject, body }) {
     const gmail = this.getClient();
 
-    const toList = GmailService.normalizeRecipients(to).filter(a => a.toLowerCase() !== this.impersonate.toLowerCase());
-    const ccList = GmailService.normalizeRecipients(cc).filter(a => a.toLowerCase() !== this.impersonate.toLowerCase());
+    const toList = this.finalRecipients(to);
+    const ccList = GmailService.dedupe(GmailService.normalizeRecipients(cc))
+      .filter(a => a.toLowerCase() !== this.impersonate.toLowerCase());
     if (!toList.length) throw new Error('A draft needs at least one recipient.');
 
     const raw = GmailService.buildRawMessage({
@@ -95,6 +96,31 @@ class GmailService {
   }
 
   // ── Helpers ──────────────────────────────────────────────────────────────────
+
+  /**
+   * Resolve the final "To" list: normalize, dedupe, and drop the sender's own address
+   * (a call follow-up shouldn't email the user themselves) — BUT if excluding the sender
+   * would leave no recipients at all (e.g. a deliberate note-to-self), keep the full list
+   * rather than producing an empty, un-saveable draft.
+   */
+  finalRecipients(input) {
+    const all = GmailService.dedupe(GmailService.normalizeRecipients(input));
+    if (!this.impersonate) return all;
+    const self = this.impersonate.toLowerCase();
+    const others = all.filter(a => a.toLowerCase() !== self);
+    return others.length ? others : all;
+  }
+
+  /** Case-insensitive de-duplication, preserving first-seen order/casing. */
+  static dedupe(list) {
+    const seen = new Set();
+    const out = [];
+    for (const a of list || []) {
+      const key = a.toLowerCase();
+      if (!seen.has(key)) { seen.add(key); out.push(a); }
+    }
+    return out;
+  }
 
   /** Accept an array or a comma/semicolon-separated string; return a clean address list. */
   static normalizeRecipients(input) {

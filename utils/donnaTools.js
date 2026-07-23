@@ -858,7 +858,9 @@ function buildTools({ client, channel, thread_ts, userId, activeClient = null, c
         if (!gmailService.isEnabled()) {
           return "Gmail drafting isn't configured yet (needs the Google service account + an impersonation mailbox). Tell the user it's not set up.";
         }
-        const toList = asList(to);
+        // finalRecipients drops the user's own address (a follow-up shouldn't email themselves)
+        // unless that would leave no one — so the preview shows exactly what gets saved.
+        const toList = gmailService.finalRecipients(to);
         if (!toList.length) return 'A draft needs at least one recipient. Ask the user (or pull participants from the meeting notes).';
         if (!body || !String(body).trim()) return 'The email body is empty — write the message before drafting.';
 
