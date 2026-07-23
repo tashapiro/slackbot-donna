@@ -90,6 +90,7 @@ it makes every future capability cheap to add.
 | **2** | Memory & client context | Scoped, persistent memory (personal / business-global / per-client) with **client isolation enforced in storage**; a client registry from the user's Google Sheet; per-message client resolution. Must survive Render redeploys. See the design section below. |
 | **3** | Priority functions | Email (draft + send, triage), Fireflies-direct for meetings/notes, deeper client/project tracking — each added as a tool. _(In progress — Fireflies notes + notetaker control + Gmail drafts landed; see below.)_ |
 | **4** | Proactivity | Scheduler for the morning brief, follow-up nudges, meeting prep — reusing the daily-rundown logic. Render Cron Jobs, or an in-process `node-cron` inside the worker. |
+| **5** | Billing (QuickBooks) | Create & edit QBO invoices from Slack via the agentic brain, preview-then-confirm. Donna's **first OAuth2 integration** — needs a durable, self-refreshing token store. Design below. |
 
 Each phase is independently shippable; after Phase 1 everything else is additive.
 
@@ -339,6 +340,68 @@ and deeper client/project tracking (e.g. `Client → Asana project` auto-routing
 `GMAIL_IMPERSONATE_EMAIL`; optionally set `FIREFLIES_NOTETAKER_EMAIL`. Then confirm: "summarize my
 last call" returns notes; "draft a follow-up to the people on my last call" → confirm → a draft
 lands in Gmail; "is Fred on my next Acme call?" and add/remove Fred against a real event.
+
+## Phase 5 — Billing (QuickBooks Online) — feasibility ✅, not yet built
+
+Adds the long-planned billing capability (see Mission → "one day maybe billing (QuickBooks)"):
+Donna can **create and edit invoices in QuickBooks Online** from Slack, natural-language →
+preview card → confirm → QBO. Feasibility was assessed on branch
+`claude/qbo-invoice-creation-feasibility-da6y4w`; the concrete design lives in
+[`quickbooks-design.md`](./quickbooks-design.md).
+
+### Verdict: feasible, and a clean fit — with exactly one genuinely new piece (OAuth2)
+
+**On the QBO side it's a "yes."** The QuickBooks Online **Accounting API (REST v3)** has
+first-class invoice CRUD: create (`POST …/invoice`), read/query (`GET` or a SQL-like
+`SELECT * FROM Invoice`), and edit. Two API quirks shape the code (not blockers):
+
+- **No PUT/PATCH** — every update is a `POST` of the *full* object. The documented
+  `sparse=true` partial-update mode is inconsistent across entities, so "edit" is
+  **read-modify-write**: fetch the invoice, change fields, POST it back with its current
+  `SyncToken` (a stale token is rejected — optimistic concurrency).
+- **Invoices reference other entities** — an invoice needs a `CustomerRef` and usually
+  `Item`s. So "invoice Acme for 12 hours" is a short *resolve-customer → resolve/create-items
+  → build-invoice* sequence, not one call.
+
+**On Donna's side, most of it fits the existing grain:**
+- A new `services/quickbooks.js` singleton slots in beside `asana.js` / `gmail.js` (same
+  thin-wrapper + `isEnabled()`-gate shape).
+- Writes reuse the **preview-then-confirm** pattern: a `propose_invoice` / `edit_invoice`
+  tool stages a `pending_invoice` in `dataStore` and posts a Slack card; a new
+  `handlers/billing.js` (modeled on `handlers/comms.js`) does the confirm/cancel and only
+  then calls QBO. Nothing bills until Tanya clicks — exactly the ethos for money movement.
+- **Client isolation lands the right way:** each client maps to one QBO **Customer**, so
+  invoicing is naturally single-client (matches the outbound-isolation rule). The registry
+  gains a `qbo_customer_id` mapping (same idea as the deferred `asana_project_id` routing).
+
+**The one new thing — and the real work — is OAuth2.** Every current integration authenticates
+with a static key/token from an env var; **none does OAuth2 with a rotating refresh token**, and
+QBO requires it (access token ~1 h; refresh token rotates ~every 100 days and must be persisted
+each refresh). There's nowhere to keep a rotating token today: `.env` is static, and in-memory
+`dataStore` is wiped on every Render restart. The fix reuses what Phase 2 already stood up —
+**Postgres** — via a new single-purpose module `services/quickbooksTokenStore.js` (the only thing
+that touches its table, exactly like `memoryStore.js`). To avoid needing an inbound HTTP callback
+in the socket-mode worker, the **initial** refresh token is minted once out-of-band (Intuit's
+OAuth 2.0 Playground or a one-off local script) and seeded; the service auto-refreshes and
+re-persists from then on — the same "paste a token once" pragmatism as Peloton, but durable.
+
+### Sub-steps (when this phase is scheduled)
+- **5a — Auth foundation.** `services/quickbooksTokenStore.js` (Postgres, defensively gated) +
+  `services/quickbooks.js` OAuth lifecycle: seed refresh token, auto-refresh access token,
+  persist rotations. One-time seeding documented; no callback route required.
+- **5b — Accounting service.** Invoice + customer + item methods on `services/quickbooks.js`
+  (create, get, query, read-modify-write update with `SyncToken`), sandbox-first.
+- **5c — Tools + confirm flow.** Read tools (`list_invoices`, `get_invoice`) direct; write tools
+  (`propose_invoice`, `edit_invoice`) staged through `handlers/billing.js` Confirm/Cancel cards,
+  wired in `app.js`. Customer resolution via the client registry (`qbo_customer_id`).
+- **5d — Config + docs.** Add the `QBO_*` block to `.env.example`, a Deployment note in
+  `docs/README.md`, and an offline `npm run check:qbo` (token-store gating + invoice-payload
+  builder, no live API — same shape as `check:phase2` / `check:fireflies-gmail`).
+
+**Live checklist (on Render, when built):** create an Intuit developer app; set `QBO_CLIENT_ID`,
+`QBO_CLIENT_SECRET`, `QBO_ENVIRONMENT`, `QBO_REALM_ID`, and the seed `QBO_REFRESH_TOKEN`; confirm
+against the **sandbox** company first (create an invoice, edit it, verify the refresh-token
+rotation persists across a restart) before pointing at the production realm.
 
 ## How we work through the phases
 
