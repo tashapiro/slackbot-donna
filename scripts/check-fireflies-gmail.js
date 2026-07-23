@@ -236,14 +236,38 @@ async function main() {
   });
 
   // ── Gmail service unit: MIME build + recipient hygiene ───────────────────────
-  await ok('GmailService.buildRawMessage is base64url (no + / =) and round-trips headers', () => {
+  await ok('GmailService.markdownToHtml renders bold + bullets, escapes HTML', () => {
     const GmailCtor = gmailService.constructor;
-    const raw = GmailCtor.buildRawMessage({ from: 'me@x.com', to: ['a@x.com'], cc: [], subject: 'Hi', body: 'Yo' });
-    assert.ok(!/[+/=]/.test(raw), 'must be base64url');
+    const html = GmailCtor.markdownToHtml('**Javier:**\n- Do the thing\n- And <this> & that');
+    assert.match(html, /<strong>Javier:<\/strong>/);
+    assert.match(html, /<ul>/);
+    assert.match(html, /<li>Do the thing<\/li>/);
+    assert.match(html, /&lt;this&gt; &amp; that/, 'HTML special chars escaped');
+    assert.ok(!/\*\*/.test(html), 'no literal ** left in HTML');
+  });
+
+  await ok('GmailService.markdownToPlain strips ** but keeps bullets/text', () => {
+    const GmailCtor = gmailService.constructor;
+    const plain = GmailCtor.markdownToPlain('**Javier:**\n- Do the thing');
+    assert.strictEqual(plain, 'Javier:\n- Do the thing');
+  });
+
+  await ok('GmailService.buildRawMessage is base64url multipart with plain + html parts', () => {
+    const GmailCtor = gmailService.constructor;
+    const raw = GmailCtor.buildRawMessage({ from: 'me@x.com', to: ['a@x.com'], cc: [], subject: 'Hi', body: '**Bold** line' });
+    assert.ok(!/[+/=]/.test(raw), 'outer must be base64url');
     const decoded = Buffer.from(raw.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf-8');
     assert.match(decoded, /To: a@x\.com/);
     assert.match(decoded, /Subject: Hi/);
-    assert.match(decoded, /\r\n\r\nYo$/);
+    assert.match(decoded, /multipart\/alternative; boundary="__donna_alt_boundary__"/);
+    assert.match(decoded, /Content-Type: text\/plain/);
+    assert.match(decoded, /Content-Type: text\/html/);
+    // Decode the html part's base64 and confirm the bold rendered.
+    const parts = decoded.split('--__donna_alt_boundary__');
+    const htmlPart = parts.find(p => /text\/html/.test(p));
+    const b64 = htmlPart.split('\r\n\r\n')[1].replace(/\r\n/g, '').trim();
+    const htmlDecoded = Buffer.from(b64, 'base64').toString('utf-8');
+    assert.match(htmlDecoded, /<strong>Bold<\/strong>/);
   });
 
   console.log(`\n${passed} checks passed.`);
